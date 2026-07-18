@@ -1,0 +1,256 @@
+openapi: 3.1.0
+info:
+  title: RiskItem ModelOps API
+  version: 0.1.0
+  description: 信贷风控模型智能监测与自主迭代系统 API。由 scripts/generate_openapi.py 从 FastAPI app 自动生成，不手工维护。
+paths:
+  /health/live:
+    get:
+      tags:
+      - health
+      summary: Health Live
+      description: 存活检查 — 进程是否在运行。
+      operationId: health_live_health_live_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /health/ready:
+    get:
+      tags:
+      - health
+      summary: Health Ready
+      description: 就绪检查 — 依赖服务是否可用。
+      operationId: health_ready_health_ready_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/models:
+    get:
+      tags:
+      - models
+      summary: List Models
+      operationId: list_models_api_models_get
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^(ACTIVE|INACTIVE|RETIRED)$
+          - type: 'null'
+          title: Status
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - models
+      summary: Register Model
+      operationId: register_model_api_models_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterModelRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/models/{model_id}:
+    get:
+      tags:
+      - models
+      summary: Get Model
+      operationId: get_model_api_models__model_id__get
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/models/{model_id}/versions:
+    post:
+      tags:
+      - models
+      summary: Register Version
+      operationId: register_version_api_models__model_id__versions_post
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Model Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterVersionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/models/{model_id}/data-windows:
+    get:
+      tags:
+      - models
+      summary: List Data Windows
+      operationId: list_data_windows_api_models__model_id__data_windows_get
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    RegisterModelRequest:
+      properties:
+        model_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Model Id
+        model_name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Model Name
+        model_type:
+          type: string
+          title: Model Type
+          default: CREDIT_RISK
+      type: object
+      required:
+      - model_id
+      - model_name
+      title: RegisterModelRequest
+      description: POST /api/models 请求体。
+    RegisterVersionRequest:
+      properties:
+        version_code:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Version Code
+        role:
+          type: string
+          title: Role
+          default: CHALLENGER
+      type: object
+      required:
+      - version_code
+      title: RegisterVersionRequest
+      description: POST /api/models/{model_id}/versions 请求体。
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError

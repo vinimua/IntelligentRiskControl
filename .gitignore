@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+pytest-cache-files-*/
+
+doc/*
+!doc/前后端接口契约文档_V1.0.md
+!doc/接口约束总汇_V1.0.md
+
+*.egg-info/
+dist/
+build/
