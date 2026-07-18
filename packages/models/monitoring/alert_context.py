@@ -1,7 +1,6 @@
 ﻿"""
 Alert Context — 任务一的核心输出对象
 同时也是 DiagnosisService 调用 KnowledgeService 的输入上下文
-来源：技术开发文档 V1.4.2 §6.3, 接口总汇 V1.1 §5.2
 """
 
 from pydantic import Field

@@ -1,6 +1,5 @@
 ﻿"""
 动态查询 Profile — 关系用途由 Profile 派生
-来源：知识图谱设计 V1.1 §9, 技术开发文档 V1.4.2 §11.11
 """
 
 from ..common.base import ContractModel

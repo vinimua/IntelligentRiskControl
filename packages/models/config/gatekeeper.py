@@ -1,6 +1,5 @@
 ﻿"""
 Gatekeeper 规则与迭代策略配置
-来源：技术开发文档 V1.4.2 §8.6 (训练侧 Gatekeeper), §9.5 (部署 Gatekeeper), §8.4
 """
 
 from pydantic import Field

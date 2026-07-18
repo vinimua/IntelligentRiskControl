@@ -1,6 +1,5 @@
 ﻿"""
 模型注册、版本与数据窗口
-来源：技术开发文档 V1.4.2 §12.3, 数据库结构设计 V1.1 §5
 """
 
 from ..common.base import ContractModel

@@ -1,7 +1,6 @@
 ﻿"""
 Diagnosis Context — KnowledgeService 返回给 DiagnosisService 的候选知识召回包
 不是最终诊断结论，也不负责选择任务三 Strategy
-来源：技术开发文档 V1.4.2 §7.2, 知识图谱接口 V1.1 §4.1
 """
 
 from pydantic import Field

@@ -1,6 +1,5 @@
 ﻿"""
 知识抽取运行记录
-来源：数据库结构设计 V1.1 §12.2
 """
 
 from pydantic import Field

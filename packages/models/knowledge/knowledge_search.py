@@ -1,6 +1,5 @@
 ﻿"""
 Qdrant 文档/案例检索模型
-来源：Qdrant 技术方案 V1.0.1 §10, 知识图谱接口 V1.1 §7
 """
 
 from pydantic import Field

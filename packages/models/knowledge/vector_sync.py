@@ -1,6 +1,5 @@
 ﻿"""
 Transactional Outbox 事件与同步状态
-来源：数据库结构设计 V1.1 §11.7, Qdrant 技术方案 V1.0.1 §7
 """
 
 from ..common.base import ContractModel

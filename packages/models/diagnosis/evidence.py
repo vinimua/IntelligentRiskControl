@@ -1,6 +1,5 @@
 ﻿"""
 Evidence Package — DiagnosisService 执行 ValidationPlan 后形成的证据集合
-来源：技术开发文档 V1.4.2 §7.5, 接口总汇 V1.1 §6.4
 """
 
 from pydantic import Field

@@ -1,6 +1,5 @@
 ﻿"""
 LangGraph 主图 State
-来源：技术开发文档 V1.4.2 §10.2, 接口总汇 V1.1 §9.1
 """
 
 from ..common.base import ContractModel

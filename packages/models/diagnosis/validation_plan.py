@@ -1,6 +1,5 @@
 ﻿"""
 ValidationPlan — DiagnosisService 根据 Diagnosis Context 确定性生成
-来源：技术开发文档 V1.4.2 §7.2.1, 接口总汇 V1.1 §6.3
 """
 
 from pydantic import Field

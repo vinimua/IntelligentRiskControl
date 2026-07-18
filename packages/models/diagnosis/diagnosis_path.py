@@ -1,6 +1,5 @@
 ﻿"""
 Top-K 根因路径
-来源：技术开发文档 V1.4.2 §7.6
 """
 
 from pydantic import Field

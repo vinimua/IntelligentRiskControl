@@ -1,6 +1,5 @@
 ﻿"""
 MonitoringNode State 输出
-来源：技术开发文档 V1.4.2 §6.4, 接口总汇 V1.1 §5.3
 """
 
 from ..common.base import ContractModel

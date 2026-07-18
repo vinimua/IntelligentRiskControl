@@ -1,6 +1,5 @@
 ﻿"""
 Iteration Context — KnowledgeService 返回策略候选
-来源：知识图谱接口 V1.1 §5.1
 """
 
 from pydantic import Field

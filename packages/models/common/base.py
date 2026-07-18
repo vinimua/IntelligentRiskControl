@@ -1,6 +1,5 @@
 """
 通用响应包装与错误模型
-来源：技术开发文档 V1.4.2 §13.3-§13.4, 知识图谱接口 V1.1 §2.3-§2.4
 """
 
 from pydantic import BaseModel, ConfigDict

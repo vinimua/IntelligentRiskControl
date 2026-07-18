@@ -1,6 +1,5 @@
 ﻿"""
 Training Worker Callback
-来源：技术开发文档 V1.4.2 §13.2, 接口总汇 V1.1 §3.3
 """
 
 from ..common.base import ContractModel

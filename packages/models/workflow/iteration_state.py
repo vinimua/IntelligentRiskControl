@@ -1,6 +1,5 @@
 ﻿"""
 LangGraph IterationSubgraph State
-来源：技术开发文档 V1.4.2 §10.3, 接口总汇 V1.1 §7.4
 """
 
 from ..common.base import ContractModel

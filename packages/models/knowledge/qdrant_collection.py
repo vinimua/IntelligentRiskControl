@@ -1,6 +1,5 @@
 ﻿"""
 Qdrant Collection 版本登记
-来源：数据库结构设计 V1.1 §11.6, Qdrant 技术方案 V1.0.1 §6
 """
 
 from ..common.base import ContractModel

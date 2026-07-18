@@ -1,6 +1,5 @@
 ﻿"""
 部署告警字段
-来源：技术开发文档 V1.4.2 §9.4, 接口总汇 V1.1 §8.4
 """
 
 from ..common.base import ContractModel

@@ -1,6 +1,5 @@
 ﻿"""
 统一知识实体、关系与 Observation
-来源：数据库结构设计 V1.1 §12.3-§12.4, 知识图谱设计 V1.1 §4-§5
 """
 
 from ..common.base import ContractModel

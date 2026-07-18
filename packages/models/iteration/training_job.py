@@ -1,6 +1,5 @@
 ﻿"""
 Training Worker 合同
-来源：技术开发文档 V1.4.2 §8.5, 接口总汇 V1.1 §7.3
 """
 
 from ..common.base import ContractModel

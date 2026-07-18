@@ -1,6 +1,5 @@
 ﻿"""
 动态权重校准模型
-来源：数据库结构设计 V1.1 §12.7, 知识图谱接口 V1.1 §8
 """
 
 from ..common.base import ContractModel

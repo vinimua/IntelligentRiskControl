@@ -1,6 +1,5 @@
 ﻿"""
 Deployment Context — KnowledgeService 返回部署风险和策略建议
-来源：知识图谱接口 V1.1 §6.1
 """
 
 from pydantic import Field

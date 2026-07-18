@@ -1,6 +1,5 @@
 ﻿"""
 DiagnosisNode 输出
-来源：技术开发文档 V1.4.2 §7.7, 接口总汇 V1.1 §6.5
 """
 
 from ..common.base import ContractModel
