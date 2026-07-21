@@ -1,0 +1,39 @@
+policy_id: TASK1_MONITORING_WINDOWS_V1
+policy_version: "1.0"
+timezone: Asia/Shanghai
+interval_boundary: LEFT_CLOSED_RIGHT_OPEN
+evaluation_date_inclusive: true
+
+# Detection cadence is independent from the macro-window duration.
+detection:
+  horizons_days: [7, 30]
+  step_days: 1
+  require_full_window: true
+
+# Current demo policy preserves the original four natural-month ranges. Changing
+# these definitions is contained inside task one; downstream contracts stay stable.
+windows:
+  W0:
+    role: FIXED_REFERENCE
+    mode: FIXED_RANGE
+    start_date: 2025-09-01
+    end_date: 2025-10-01
+    locked: true
+  W1:
+    role: HISTORICAL_NORMAL
+    mode: FIXED_RANGE
+    start_date: 2025-10-01
+    end_date: 2025-11-01
+    locked: false
+  W2:
+    role: TRANSITION_OBSERVATION
+    mode: FIXED_RANGE
+    start_date: 2025-11-01
+    end_date: 2025-12-01
+    locked: false
+  W3:
+    role: CURRENT_MONITORING
+    mode: FIXED_RANGE
+    start_date: 2025-12-01
+    end_date: 2026-01-01
+    locked: false

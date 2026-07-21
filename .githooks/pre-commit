@@ -28,19 +28,19 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # ── 1. Python 编译检查（语法错误直接拦） ──
 echo ""
 echo "[1/3] Python 编译检查..."
-python -m compileall -q apps workers packages migrations 2>&1
+/c/Users/Vinim/AppData/Local/Programs/Python/Python314/python -m compileall -q apps workers packages migrations 2>&1
 echo -e "${GREEN}✓${NC} 编译通过"
 
 # ── 2. OpenAPI 产物一致性 ──
 echo ""
 echo "[2/3] OpenAPI 产物一致性..."
-if python scripts/generate_openapi.py --check 2>&1; then
+if /c/Users/Vinim/AppData/Local/Programs/Python/Python314/python scripts/generate_openapi.py --check 2>&1; then
     echo -e "${GREEN}✓${NC} OpenAPI 与代码一致"
 else
     echo ""
     echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${RED}  拒绝提交：OpenAPI 产物已过期${NC}"
-    echo -e "${RED}  请运行: python scripts/generate_openapi.py${NC}"
+    echo -e "${RED}  请运行: /c/Users/Vinim/AppData/Local/Programs/Python/Python314/python scripts/generate_openapi.py${NC}"
     echo -e "${RED}  然后重新 git add contracts/generated/openapi/${NC}"
     echo -e "${RED}  紧急绕过: git commit --no-verify${NC}"
     echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -50,7 +50,7 @@ fi
 # ── 3. 单元测试 ──
 echo ""
 echo "[3/3] 单元测试 + OpenAPI 测试..."
-if python -m pytest tests/unit tests/test_openapi.py -q 2>&1; then
+if /c/Users/Vinim/AppData/Local/Programs/Python/Python314/python -m pytest tests/unit tests/test_openapi.py -q 2>&1; then
     echo -e "${GREEN}✓${NC} 测试通过"
 else
     echo ""

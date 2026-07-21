@@ -1,0 +1,14 @@
+{
+  "model_id": "credit_model_007",
+  "model_version": "champion_v1",
+  "model_role": "champion",
+  "algorithm_family": "LogisticRegression",
+  "prediction_threshold": 0.0196078431372549,
+  "score_field": "calibrated_pd",
+  "feature_schema_version": "831ace29352ee99d",
+  "baseline_id": "credit_model_007_baseline",
+  "baseline_version": "baseline_v1",
+  "lifecycle_status": "CHAMPION_V1_W1_HEALTHY",
+  "competition_monitoring_enabled": true,
+  "production_ready": false
+}

@@ -23,6 +23,12 @@ migrate:
 rollback:
 	alembic downgrade -1
 
+seed-kg:
+	python -m apps.modelops_api.scripts.seed_knowledge_graph
+
+seed-windows:
+	python -m apps.modelops_api.scripts.seed_data_windows
+
 # ── 运行服务 ──
 api:
 	uvicorn apps.modelops_api.main:app --host 0.0.0.0 --port 8000 --reload

@@ -1,0 +1,57 @@
+{
+  "model_id": "credit_model_023",
+  "algorithm_family": "XGBoost",
+  "feature_strategy_id": "F04",
+  "random_seed": 2026023,
+  "selected_parameters": {
+    "n_estimators": 600,
+    "max_depth": 2,
+    "learning_rate": 0.05,
+    "subsample": 0.7,
+    "colsample_bytree": 0.6,
+    "min_child_weight": 3,
+    "scale_pos_weight": 1.0
+  },
+  "calibrator": "Isotonic",
+  "threshold": 0.04395604506134987,
+  "status": "CHAMPION_V1_W1_HEALTHY",
+  "training_seconds": 0.9187273330171593,
+  "model_sha256": "b23f0b15b695b754d30781113a5c98129267c398f368a34a4e846def935691d4",
+  "calibrator_sha256": "354cac440d235547e8ac5a12e61c4d93e276da02c359d66cf09ecf55e5e80249",
+  "w1_metrics": {
+    "row_count": 38611,
+    "roc_auc": 0.9623959160794197,
+    "pr_auc": 0.7348015040039769,
+    "ks": 0.8035074076123093,
+    "brier": 0.017017893833629862,
+    "ece": 0.00398262028246594,
+    "bad_recall": 0.8781431334622823,
+    "high_risk_rate": 0.10691253787780684,
+    "score_mean": 0.03729214288021335,
+    "score_std": 0.1430454224169763
+  },
+  "w2_metrics": {
+    "row_count": 37142,
+    "roc_auc": 0.9640977836906397,
+    "pr_auc": 0.7395714549580876,
+    "ks": 0.8082470788493062,
+    "brier": 0.01699843298189855,
+    "ece": 0.003970436141428403,
+    "bad_recall": 0.8858477970627503,
+    "high_risk_rate": 0.11019869689300522,
+    "score_mean": 0.03826314963150909,
+    "score_std": 0.1448355239591361
+  },
+  "w3_metrics": {
+    "row_count": 37049,
+    "roc_auc": 0.9651593755629013,
+    "pr_auc": 0.7505703026034986,
+    "ks": 0.8116947707947085,
+    "brier": 0.016542327216444518,
+    "ece": 0.0037019272374052567,
+    "bad_recall": 0.8847184986595175,
+    "high_risk_rate": 0.10656158060946315,
+    "score_mean": 0.037755721773364184,
+    "score_std": 0.14505909976924675
+  }
+}

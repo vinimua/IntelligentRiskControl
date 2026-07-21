@@ -1,0 +1,35 @@
+{
+  "status": "CHAMPION_V1_W1_HEALTHY",
+  "metrics": {
+    "row_count": 38611,
+    "roc_auc": 0.9561524118102869,
+    "pr_auc": 0.7025603905988195,
+    "ks": 0.7691325130836676,
+    "brier": 0.01815245762579075,
+    "ece": 0.003353759938231749,
+    "bad_recall": 0.8581560283687943,
+    "high_risk_rate": 0.12048379995338115,
+    "score_mean": 0.03931277004288479,
+    "score_std": 0.14749992180168808
+  },
+  "w0_threshold_metrics": {
+    "row_count": 4953,
+    "roc_auc": 0.9588877095109971,
+    "pr_auc": 0.7112232848305751,
+    "ks": 0.8083831327518227,
+    "brier": 0.016749140546819596,
+    "ece": 0.0038483492476198856,
+    "bad_recall": 0.8983957219251337,
+    "high_risk_rate": 0.12053301029678982,
+    "score_mean": 0.037332230210374816,
+    "score_std": 0.1410234503232512
+  },
+  "gates": {
+    "roc_auc_gte_0_95": true,
+    "ks_gte_0_75": true,
+    "bad_recall_gte_0_80": true,
+    "brier_lte_0_05": true,
+    "auc_drop_lte_0_03": true,
+    "ks_drop_lte_0_05": true
+  }
+}

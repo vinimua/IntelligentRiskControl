@@ -1,0 +1,38 @@
+{
+  "model_id": "credit_model_037",
+  "algorithm_family": "CatBoost",
+  "feature_strategy_id": "F01",
+  "random_seed": 2026037,
+  "selected_parameters": {
+    "iterations": 500,
+    "depth": 4,
+    "learning_rate": 0.03,
+    "l2_leaf_reg": 3,
+    "random_strength": 0.5,
+    "auto_class_weights": null
+  },
+  "calibrator": "Isotonic",
+  "data_sha256": "b5089a4ff7e2b1b4bc392fd847b77429c918fa1989c57b43aa4a39431bf786c5",
+  "plan_sha256": "209f83d52be48e9931ea89eaa3521001d3bf8ba2525f34209ad7111396a3589f",
+  "python": "3.11.7",
+  "window_row_counts": {
+    "W0_train": 17313,
+    "W0_tune": 8682,
+    "W0_calibration_fit": 3729,
+    "W0_calibration_select": 2521,
+    "W0_threshold": 4953,
+    "W1": 38611,
+    "W2": 37142,
+    "W3": 37049
+  },
+  "fit_boundaries": [
+    "W0_train",
+    "W0_tune"
+  ],
+  "selection_boundaries": {
+    "hyperparameters": "W0_tune",
+    "calibrator_fit": "W0_calibration_fit",
+    "calibrator_select": "W0_calibration_select",
+    "threshold": "W0_threshold"
+  }
+}

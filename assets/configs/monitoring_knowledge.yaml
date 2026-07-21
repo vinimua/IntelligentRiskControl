@@ -1,0 +1,50 @@
+schema_version: "1.0"
+profile_code: PRODUCTION_MONITORING
+metric_version: "1.0"
+window_semantics:
+  reference_window_id: W0
+  historical_window_id: W1
+  current_window_id: W3
+  historical_aggregation_7d: MEDIAN_OF_ROLLING_WINDOWS
+  historical_aggregation_30d: SINGLE_COMPLETE_WINDOW
+rules:
+  - metric_code: FEATURE_PSI
+    window_days: 7
+    alert_code: HIGH_FEATURE_PSI
+    threshold: 0.25
+    warning_threshold: 0.10
+    rule_type: UPPER_THRESHOLD
+    direction: DEVIATION_BAD
+    threshold_rule_id: RULE_FEATURE_PSI_7D_HIGH_V1
+    threshold_rule_version: "1.0"
+    severity: HIGH
+  - metric_code: FEATURE_PSI
+    window_days: 30
+    alert_code: HIGH_FEATURE_PSI
+    threshold: 0.25
+    warning_threshold: 0.10
+    rule_type: UPPER_THRESHOLD
+    direction: DEVIATION_BAD
+    threshold_rule_id: RULE_FEATURE_PSI_30D_HIGH_V1
+    threshold_rule_version: "1.0"
+    severity: HIGH
+  - metric_code: SCORE_PSI
+    window_days: 7
+    alert_code: HIGH_SCORE_PSI
+    threshold: 0.25
+    warning_threshold: 0.10
+    rule_type: UPPER_THRESHOLD
+    direction: DEVIATION_BAD
+    threshold_rule_id: RULE_SCORE_PSI_7D_HIGH_V1
+    threshold_rule_version: "1.0"
+    severity: HIGH
+  - metric_code: SCORE_PSI
+    window_days: 30
+    alert_code: HIGH_SCORE_PSI
+    threshold: 0.25
+    warning_threshold: 0.10
+    rule_type: UPPER_THRESHOLD
+    direction: DEVIATION_BAD
+    threshold_rule_id: RULE_SCORE_PSI_30D_HIGH_V1
+    threshold_rule_version: "1.0"
+    severity: HIGH

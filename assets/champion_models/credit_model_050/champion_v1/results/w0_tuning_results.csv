@@ -1,0 +1,3 @@
+candidate_id,parameters_json,w0_tune_roc_auc,fit_seconds,status,error
+1,"{""interactions"": 0, ""learning_rate"": 0.025, ""max_bins"": 64, ""min_samples_leaf"": 15, ""outer_bags"": 6}",0.9492535561403638,4.605584832956083,PASS,
+2,"{""interactions"": 15, ""learning_rate"": 0.05, ""max_bins"": 128, ""min_samples_leaf"": 30, ""outer_bags"": 10}",0.9492814883407813,9.599643209017813,PASS,

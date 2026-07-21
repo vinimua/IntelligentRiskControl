@@ -1,0 +1,21 @@
+{
+  "schema_version": "champion_input_schema/1.0",
+  "required_business_fields": [
+    "social_score",
+    "telecom_score",
+    "ecomm_risk_score",
+    "judicial_risk_score",
+    "device_risk_score",
+    "blacklist_hit",
+    "gps_anomaly",
+    "emulator_flag",
+    "login_fail_count",
+    "ip_change_freq",
+    "overdue_history",
+    "debt_income_ratio"
+  ],
+  "extra_fields_allowed": true,
+  "id_card_is_never_output": true,
+  "unknown_categories": "FAIL",
+  "non_finite_numeric": "FAIL"
+}

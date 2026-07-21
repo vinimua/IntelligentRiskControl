@@ -1,0 +1,19 @@
+{
+  "fit_window": "W0_calibration_fit",
+  "selection_window": "W0_calibration_select",
+  "primary_metric": "Brier",
+  "secondary_metric": "ECE",
+  "candidates": [
+    {
+      "calibrator": "Platt",
+      "brier": 0.01797640696167946,
+      "ece": 0.005249866032851022
+    },
+    {
+      "calibrator": "Isotonic",
+      "brier": 0.016949646174907684,
+      "ece": 0.005610557861156237
+    }
+  ],
+  "selected": "Isotonic"
+}

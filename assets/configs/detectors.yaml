@@ -1,0 +1,5 @@
+signals: [auc, ks, prediction_mean, prediction_psi_7d, prediction_psi_30d, max_feature_psi_7d, max_feature_psi_30d, missing_rate_max_delta, outlier_rate_max_delta]
+adwin: {delta: 0.002, clock: 1, grace_period: 5}
+page_hinkley: {min_instances: 5, delta: 0.005, threshold: 25.0, alpha: 0.999}
+kswin: {alpha: 0.005, window_size: 20, stat_size: 8, seed: 2026}
+robust_z: {window_size: 10, warmup: 5, z_threshold: 3.5}

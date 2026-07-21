@@ -64,6 +64,15 @@ async def health_ready(request: Request):
     except Exception as e:
         checks["minio"] = {"status": "unavailable", "error": str(e)}
 
+    # Neo4j
+    try:
+        from ..neo4j_db import verify_neo4j_connectivity
+
+        ok = await verify_neo4j_connectivity()
+        checks["neo4j"] = {"status": "ok" if ok else "unavailable"}
+    except Exception as e:
+        checks["neo4j"] = {"status": "unavailable", "error": str(e)}
+
     all_ok = all(v["status"] == "ok" for v in checks.values())
     status_code = 200 if all_ok else 503
 

@@ -1,0 +1,64 @@
+fleet:
+  max_models: 50
+  max_workers: 30
+  validation_max_workers: 1
+  deployment_stage: phase_1
+  target_model_count: 50
+
+champion_fleet:
+  bundle_root: artifacts/champion_models
+  enabled_model_ids:
+    - credit_model_001
+    - credit_model_002
+    - credit_model_004
+    - credit_model_006
+    - credit_model_007
+    - credit_model_008
+    - credit_model_009
+    - credit_model_012
+    - credit_model_015
+    - credit_model_017
+    - credit_model_018
+    - credit_model_019
+    - credit_model_020
+    - credit_model_023
+    - credit_model_024
+    - credit_model_027
+    - credit_model_028
+    - credit_model_029
+    - credit_model_033
+    - credit_model_034
+    - credit_model_037
+    - credit_model_038
+    - credit_model_040
+    - credit_model_042
+    - credit_model_043
+    - credit_model_044
+    - credit_model_045
+    - credit_model_046
+    - credit_model_048
+    - credit_model_050
+  healthy_reserve_model_ids:
+    - credit_model_030
+  pending_review_model_ids:
+    - credit_model_003
+    - credit_model_005
+    - credit_model_010
+    - credit_model_011
+    - credit_model_013
+    - credit_model_014
+    - credit_model_016
+    - credit_model_021
+    - credit_model_022
+    - credit_model_025
+    - credit_model_026
+    - credit_model_031
+    - credit_model_032
+    - credit_model_035
+    - credit_model_036
+    - credit_model_039
+    - credit_model_041
+    - credit_model_047
+    - credit_model_049
+
+models: []

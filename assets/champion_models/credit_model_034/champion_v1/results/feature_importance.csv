@@ -1,0 +1,13 @@
+feature,importance
+numeric__social_score,2160.0
+numeric__telecom_score,2045.0
+numeric__judicial_risk_score,1984.0
+numeric__ecomm_risk_score,1831.0
+numeric__debt_income_ratio,1671.0
+numeric__device_risk_score,1556.0
+numeric__login_fail_count,1175.0
+numeric__overdue_history,950.0
+numeric__ip_change_freq,452.0
+numeric__blacklist_hit,417.0
+numeric__emulator_flag,381.0
+numeric__gps_anomaly,347.0

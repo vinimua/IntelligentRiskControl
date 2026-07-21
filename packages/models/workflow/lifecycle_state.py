@@ -20,6 +20,10 @@ class ModelLifecycleState(ContractModel):
     current_phase: LifecyclePhase = LifecyclePhase.CREATED
     requires_manual_review: bool = False
 
+    # 任务一窗口配置（可选，不传则自动选择）
+    baseline_window_id: str | None = None
+    current_window_id: str | None = None
+
     # 任务一摘要
     monitoring_run_id: str | None = None
     has_alerts: bool | None = None

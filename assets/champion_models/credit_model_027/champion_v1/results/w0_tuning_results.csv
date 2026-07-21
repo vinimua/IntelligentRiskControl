@@ -1,0 +1,3 @@
+candidate_id,parameters_json,w0_tune_roc_auc,fit_seconds,status,error
+1,"{""class_weight"": null, ""feature_fraction"": 0.6, ""learning_rate"": 0.05, ""max_depth"": 4, ""min_child_samples"": 10, ""n_estimators"": 600, ""num_leaves"": 12}",0.9862499323793249,0.7548311669961549,PASS,
+2,"{""class_weight"": ""balanced"", ""feature_fraction"": 0.8, ""learning_rate"": 0.1, ""max_depth"": 7, ""min_child_samples"": 30, ""n_estimators"": 900, ""num_leaves"": 24}",0.9841949710017794,1.665397042001132,PASS,

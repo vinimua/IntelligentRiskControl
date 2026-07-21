@@ -1,0 +1,26 @@
+{
+  "selection_window": "W0_threshold",
+  "score_field": "calibrated_pd",
+  "comparison": ">=",
+  "minimum_bad_recall": 0.8,
+  "selection_rule": "maximize KS; tie: lower high-risk rate, then higher threshold",
+  "selected": {
+    "threshold": 0.043478260869565216,
+    "recall": 0.8823529411764706,
+    "fpr": 0.09861519093579521,
+    "ks": 0.7837377502406754,
+    "high_risk_rate": 0.1282051282051282
+  },
+  "metrics": {
+    "row_count": 4953,
+    "roc_auc": 0.9543765890745723,
+    "pr_auc": 0.6955662539157198,
+    "ks": 0.7837377502406754,
+    "brier": 0.01746353775867003,
+    "ece": 0.0051874085427862145,
+    "bad_recall": 0.8823529411764706,
+    "high_risk_rate": 0.1282051282051282,
+    "score_mean": 0.03635872338071029,
+    "score_std": 0.13801702944351427
+  }
+}

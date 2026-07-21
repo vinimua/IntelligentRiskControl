@@ -1,0 +1,3 @@
+candidate_id,parameters_json,w0_tune_roc_auc,fit_seconds,status,error
+1,"{""C"": 0.1, ""class_weight"": null, ""max_iter"": 2000, ""solver"": ""lbfgs""}",0.9478389139394762,0.05028162500821054,PASS,
+2,"{""C"": 1.0, ""class_weight"": null, ""max_iter"": 2000, ""solver"": ""lbfgs""}",0.9478923033352109,0.054021832998842,PASS,

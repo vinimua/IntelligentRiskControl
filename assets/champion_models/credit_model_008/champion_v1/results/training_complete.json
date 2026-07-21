@@ -1,0 +1,54 @@
+{
+  "model_id": "credit_model_008",
+  "algorithm_family": "LogisticRegression",
+  "feature_strategy_id": "F02",
+  "random_seed": 2026008,
+  "selected_parameters": {
+    "solver": "lbfgs",
+    "C": 0.05,
+    "class_weight": null,
+    "max_iter": 2000
+  },
+  "calibrator": "Isotonic",
+  "threshold": 0.0625,
+  "status": "CHAMPION_V1_W1_HEALTHY",
+  "training_seconds": 0.27063345903297886,
+  "model_sha256": "ec5f90691eea076d808faf18ff6e1d4ba0a867b78ba9b9dff22504afbc6ea821",
+  "calibrator_sha256": "de108b3ab20602a0bde5e3c0ecb5a741155d5f8115d6834569c16c34a07198c0",
+  "w1_metrics": {
+    "row_count": 38611,
+    "roc_auc": 0.9567041683672564,
+    "pr_auc": 0.7174784140854152,
+    "ks": 0.7777726223667825,
+    "brier": 0.018116132394764423,
+    "ece": 0.004518100392387125,
+    "bad_recall": 0.8349451966473244,
+    "high_risk_rate": 0.09619020486389888,
+    "score_mean": 0.03818747508434811,
+    "score_std": 0.14329556071043448
+  },
+  "w2_metrics": {
+    "row_count": 37142,
+    "roc_auc": 0.9622683609567928,
+    "pr_auc": 0.7266219309729163,
+    "ks": 0.7964227244076154,
+    "brier": 0.017900790245550535,
+    "ece": 0.0037401230962950728,
+    "bad_recall": 0.8611481975967957,
+    "high_risk_rate": 0.09897151472726294,
+    "score_mean": 0.03955348250275979,
+    "score_std": 0.14584204605174586
+  },
+  "w3_metrics": {
+    "row_count": 37049,
+    "roc_auc": 0.9643121255068985,
+    "pr_auc": 0.7432270394331066,
+    "ks": 0.8026147044344688,
+    "brier": 0.01709924582879773,
+    "ece": 0.0034536229416141377,
+    "bad_recall": 0.8652815013404825,
+    "high_risk_rate": 0.09835623093740722,
+    "score_mean": 0.03922077006231568,
+    "score_std": 0.14616109045403763
+  }
+}

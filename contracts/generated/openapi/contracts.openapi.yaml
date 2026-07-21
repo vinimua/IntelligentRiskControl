@@ -179,6 +179,380 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/lifecycle-runs:
+    post:
+      tags:
+      - workflow
+      summary: Start Run
+      operationId: start_run_api_lifecycle_runs_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartRunRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/lifecycle-runs/{lifecycle_run_id}:
+    get:
+      tags:
+      - workflow
+      summary: Get Run
+      operationId: get_run_api_lifecycle_runs__lifecycle_run_id__get
+      parameters:
+      - name: lifecycle_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Lifecycle Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/lifecycle-runs/{lifecycle_run_id}/resume:
+    post:
+      tags:
+      - workflow
+      summary: Resume Run
+      operationId: resume_run_api_lifecycle_runs__lifecycle_run_id__resume_post
+      parameters:
+      - name: lifecycle_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Lifecycle Run Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResumeRequest'
+              default:
+                decision: approved
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/lifecycle-runs/{lifecycle_run_id}/cancel:
+    post:
+      tags:
+      - workflow
+      summary: Cancel Run
+      operationId: cancel_run_api_lifecycle_runs__lifecycle_run_id__cancel_post
+      parameters:
+      - name: lifecycle_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Lifecycle Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/knowledge/resolve-alert:
+    get:
+      tags:
+      - knowledge
+      summary: Resolve Alert
+      description: 查询 Metric → AlertType 映射。
+      operationId: resolve_alert_api_knowledge_resolve_alert_get
+      parameters:
+      - name: metric_code
+        in: query
+        required: true
+        schema:
+          type: string
+          description: 指标代码，如 FEATURE_PSI
+          title: Metric Code
+        description: 指标代码，如 FEATURE_PSI
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/knowledge/entities/{entity_code}:
+    get:
+      tags:
+      - knowledge
+      summary: Get Entity
+      description: 查询单个知识实体。
+      operationId: get_entity_api_knowledge_entities__entity_code__get
+      parameters:
+      - name: entity_code
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Entity Code
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs:
+    get:
+      tags:
+      - monitoring
+      summary: List Runs
+      description: 列出最近的监控运行。
+      operationId: list_runs_api_monitoring_runs_get
+      parameters:
+      - name: model_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 按模型筛选
+          title: Model Id
+        description: 按模型筛选
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          description: 返回数量上限
+          default: 50
+          title: Limit
+        description: 返回数量上限
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - monitoring
+      summary: Trigger Run
+      description: '触发一次完整监控管道 — 每个 W1/W2/W3 窗口独立运行 _monitor_one。
+
+
+        W0 做基线，W1/W2/W3 各自作为独立监控窗口。
+
+        指标按窗口分别持久化，Dashboard 按窗口分组展示。'
+      operationId: trigger_run_api_monitoring_runs_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunMonitoringRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/{monitoring_run_id}:
+    get:
+      tags:
+      - monitoring
+      summary: Get Run
+      description: 查看一次监控运行的详情。
+      operationId: get_run_api_monitoring_runs__monitoring_run_id__get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/{monitoring_run_id}/metrics:
+    get:
+      tags:
+      - monitoring
+      summary: Get Metrics
+      description: 查看一次监控运行的全部指标。支持 ?category=drift 按分类过滤。
+      operationId: get_metrics_api_monitoring_runs__monitoring_run_id__metrics_get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      - name: category
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: '按 category 过滤: core|distribution|drift|quality|aggregate|meta'
+          title: Category
+        description: '按 category 过滤: core|distribution|drift|quality|aggregate|meta'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/{monitoring_run_id}/alerts:
+    get:
+      tags:
+      - monitoring
+      summary: Get Alerts
+      description: 查看一次监控运行的全部告警。
+      operationId: get_alerts_api_monitoring_runs__monitoring_run_id__alerts_get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/detailed:
+    post:
+      tags:
+      - monitoring
+      summary: Trigger Detailed Run
+      description: '触发一次完整模式监控运行（V2）。
+
+
+        使用交接包全套算法：PSI/JS/KS/Wasserstein + BH 校正 + 4 个检测器 + 趋势斜率。
+
+        需要提供分箱规则和特征列表才能启用漂移检测。'
+      operationId: trigger_detailed_run_api_monitoring_runs_detailed_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunDetailedMonitoringRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/parallel-cycle:
+    post:
+      tags:
+      - monitoring
+      summary: Trigger Parallel Cycle
+      description: '触发多模型并行监控周期（V2）。
+
+
+        使用 asyncio 并发执行，最多 max_concurrency 个模型同时监控。'
+      operationId: trigger_parallel_cycle_api_monitoring_parallel_cycle_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunParallelCycleRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     HTTPValidationError:
@@ -228,6 +602,140 @@ components:
       - version_code
       title: RegisterVersionRequest
       description: POST /api/models/{model_id}/versions 请求体。
+    ResumeRequest:
+      properties:
+        decision:
+          type: string
+          title: Decision
+          default: approved
+      type: object
+      title: ResumeRequest
+    RunDetailedMonitoringRequest:
+      properties:
+        model_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Model Id
+        champion_version:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Champion Version
+        baseline_window_id:
+          type: string
+          title: Baseline Window Id
+          default: ''
+        current_window_id:
+          type: string
+          title: Current Window Id
+          default: ''
+        data_track:
+          type: string
+          title: Data Track
+          default: NATURAL
+        binning_rules:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Binning Rules
+        feature_names:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Feature Names
+        min_samples:
+          type: integer
+          title: Min Samples
+          default: 2000
+        min_bad:
+          type: integer
+          title: Min Bad
+          default: 50
+      type: object
+      required:
+      - model_id
+      - champion_version
+      title: RunDetailedMonitoringRequest
+      description: V2 完整模式监控请求（含分箱规则和特征列表）。
+    RunMonitoringRequest:
+      properties:
+        model_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Model Id
+        champion_version:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Champion Version
+        baseline_window_id:
+          type: string
+          title: Baseline Window Id
+          default: ''
+        current_window_id:
+          type: string
+          title: Current Window Id
+          default: ''
+        data_track:
+          type: string
+          title: Data Track
+          default: NATURAL
+      type: object
+      required:
+      - model_id
+      - champion_version
+      title: RunMonitoringRequest
+    RunParallelCycleRequest:
+      properties:
+        model_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 50
+          minItems: 1
+          title: Model Ids
+        champion_versions:
+          additionalProperties:
+            type: string
+          type: object
+          title: Champion Versions
+        max_concurrency:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Max Concurrency
+          default: 30
+      type: object
+      required:
+      - model_ids
+      title: RunParallelCycleRequest
+      description: 多模型并行监控周期请求。
+    StartRunRequest:
+      properties:
+        model_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Model Id
+        champion_version:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Champion Version
+        trigger_type:
+          type: string
+          title: Trigger Type
+          default: SCHEDULED_TRIGGER
+      type: object
+      required:
+      - model_id
+      - champion_version
+      title: StartRunRequest
     ValidationError:
       properties:
         loc:

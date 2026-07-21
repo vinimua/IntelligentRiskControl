@@ -25,6 +25,7 @@
 - W4 违规错误码：`DATASET_POLICY_VIOLATION`
 - 标签未成熟错误码：`LABEL_NOT_MATURE`
 - 改完接口必须跑 `generate_openapi.py`
+- **禁止在任何 Python 文件中写"来源：XXX 文档 §X.X"注释。Pydantic 代码是唯一真相源，不需要引用外部文档。**
 
 **架构边界（来自路线图）：**
 - PostgreSQL = 业务事实唯一真相源
