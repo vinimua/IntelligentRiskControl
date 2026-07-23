@@ -32,7 +32,7 @@ async def resolve_alert(
     metric_code: str = Query(..., description="指标代码，如 FEATURE_PSI"),
     driver: Neo4jAsyncDriver = Depends(get_neo4j_driver),
 ):
-    """查询 Metric → AlertType 映射。"""
+    """查询 Metric → Alert 映射。"""
     svc = KnowledgeService(driver)
     result = await svc.resolve_alert(metric_code)
     if not result:

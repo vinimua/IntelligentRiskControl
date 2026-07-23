@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from apps.modelops_api.services.monitoring.monitoring_service import MonitoringService, MonitoringRunResult
-from apps.modelops_api.services.knowledge_service import AlertTypeResult
+from apps.modelops_api.services.knowledge_service import AlertResult
 from packages.models.common.enums import Severity, AvailabilityStatus
 
 
@@ -60,9 +60,9 @@ def _make_drift_data(n: int = 500) -> list[dict]:
 
 @pytest.fixture
 def mock_knowledge() -> MagicMock:
-    """Mock KnowledgeService 返回固定 AlertTypeResult。"""
+    """Mock KnowledgeService 返回固定 AlertResult。"""
     ks = MagicMock()
-    ks.resolve_alert = AsyncMock(return_value=AlertTypeResult(
+    ks.resolve_alert = AsyncMock(return_value=AlertResult(
         alert_code="HIGH_FEATURE_PSI",
         metric_code="FEATURE_PSI",
         severity=Severity.HIGH,

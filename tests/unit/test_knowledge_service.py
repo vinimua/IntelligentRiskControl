@@ -9,7 +9,7 @@ from neo4j import AsyncDriver
 
 from apps.modelops_api.services.knowledge_service import (
     KnowledgeService,
-    AlertTypeResult,
+    AlertResult,
     _DEFAULT_METRIC_ALERT_MAP,
 )
 from packages.models.common.enums import Severity
@@ -52,9 +52,9 @@ class TestDefaultMappingFallback:
             assert len(mapping["description"]) > 0, f"{metric_code}: description 为空"
 
 
-class TestAlertTypeResult:
-    def test_alert_type_result_fields(self):
-        result = AlertTypeResult(
+class TestAlertResult:
+    def test_alert_result_fields(self):
+        result = AlertResult(
             alert_code="HIGH_FEATURE_PSI",
             metric_code="FEATURE_PSI",
             severity=Severity.HIGH,
@@ -67,8 +67,8 @@ class TestAlertTypeResult:
         assert result.severity == Severity.HIGH
         assert result.from_neo4j is True
 
-    def test_alert_type_result_from_default(self):
-        result = AlertTypeResult(
+    def test_alert_result_from_default(self):
+        result = AlertResult(
             alert_code="AUC_DROP",
             metric_code="AUC",
             severity=Severity.WARNING,

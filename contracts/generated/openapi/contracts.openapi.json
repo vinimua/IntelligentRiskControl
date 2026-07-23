@@ -461,7 +461,7 @@
           "knowledge"
         ],
         "summary": "Resolve Alert",
-        "description": "查询 Metric → AlertType 映射。",
+        "description": "查询 Metric → Alert 映射。",
         "operationId": "resolve_alert_api_knowledge_resolve_alert_get",
         "parameters": [
           {

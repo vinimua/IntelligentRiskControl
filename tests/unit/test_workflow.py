@@ -80,6 +80,24 @@ class TestRouting:
 
 
 class TestMonitoringNode:
+    @pytest.fixture(autouse=True)
+    async def _seed_test_model(self):
+        """确保 test_model 存在于 models 表中（FK 约束要求）。"""
+        from apps.modelops_api.database import get_db
+        from sqlalchemy import text
+
+        db_gen = get_db()
+        db = await db_gen.__anext__()
+        try:
+            await db.execute(
+                text("INSERT INTO model_registry.models (model_id, model_name, model_type, status, current_champion_version) "
+                     "VALUES ('test_model', 'test_model', 'champion', 'ACTIVE', 'v1') "
+                     "ON CONFLICT (model_id) DO NOTHING")
+            )
+            await db.commit()
+        finally:
+            await db_gen.aclose()
+
     async def test_monitoring_node_returns_expected_keys(self):
         """阶段 4 monitoring_node 返回标准 State 字段（无论走真实服务还是降级 Mock）。"""
         result = await monitoring_node(_base_state())

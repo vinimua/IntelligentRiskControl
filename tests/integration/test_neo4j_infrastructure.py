@@ -28,7 +28,13 @@ async def test_seed_script_is_idempotent():
     from apps.modelops_api.config import settings
     from neo4j import AsyncGraphDatabase
 
-    from apps.modelops_api.scripts.seed_knowledge_graph import seed
+    from apps.modelops_api.scripts.seed_knowledge_graph import (
+        ALERTS,
+        FEATURES,
+        METRICS,
+        TRIGGERS_RELATIONS,
+        seed,
+    )
 
     # 运行种子脚本
     count1 = await seed()
@@ -39,26 +45,36 @@ async def test_seed_script_is_idempotent():
     # 两次运行实体数应相同
     assert count1 == count2
 
-    # 验证实体数 = 7 Metric + 7 AlertType + 4 Severity = 18
+    # 验证实体数 = Feature + Metric + Alert
     driver = AsyncGraphDatabase.driver(
         settings.neo4j_uri,
         auth=(settings.neo4j_user, settings.neo4j_password),
     )
     async with driver.session(database="neo4j") as session:
         result = await session.run(
-            "MATCH (n) WHERE n.namespace = 'MONITORING' AND n.enabled = true RETURN count(n) AS cnt"
+            """
+            MATCH (n)
+            WHERE n.namespace = 'MONITORING'
+              AND n.enabled = true
+              AND (n:Feature OR n:Metric OR n:Alert)
+            RETURN count(n) AS cnt
+            """
         )
         record = await result.single()
         assert record is not None
-        assert record["cnt"] == 18
+        assert record["cnt"] == len(FEATURES) + len(METRICS) + len(ALERTS)
 
-        # 验证关系数 = 7 BREACHES_THRESHOLD + 7 HAS_SEVERITY = 14
+        # 验证 Metric -[:TRIGGERS]-> Alert 关系数
         result2 = await session.run(
-            "MATCH ()-[r]->() WHERE r.weight_version = 'seed_v1' AND r.enabled = true RETURN count(r) AS cnt"
+            """
+            MATCH (:Metric)-[r:TRIGGERS]->(:Alert)
+            WHERE r.enabled = true
+            RETURN count(r) AS cnt
+            """
         )
         record2 = await result2.single()
         assert record2 is not None
-        assert record2["cnt"] == 14
+        assert record2["cnt"] == len(TRIGGERS_RELATIONS)
 
     await driver.close()
 

@@ -10,7 +10,7 @@ Neo4j 不可用时回退到内置默认映射，保证监控链路不中断。
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import structlog
 from neo4j import AsyncDriver as Neo4jAsyncDriver
@@ -72,8 +72,8 @@ _DEFAULT_METRIC_ALERT_MAP: dict[str, dict] = {
 
 
 @dataclass
-class AlertTypeResult:
-    """resolve_alert() 返回的告警类型结果。"""
+class AlertResult:
+    """resolve_alert() 返回的告警结果。"""
 
     alert_code: str
     metric_code: str
@@ -97,7 +97,7 @@ class KnowledgeService:
 
     async def resolve_alert(
         self, metric_code: str, severity: Severity | None = None
-    ) -> AlertTypeResult | None:
+    ) -> AlertResult | None:
         """给定违反阈值的指标代码，返回对应的告警类型。
 
         优先从 Neo4j 查询，失败时回退到内置默认映射。
@@ -105,10 +105,9 @@ class KnowledgeService:
 
         Cypher:
             MATCH (m:Metric {entity_code: $metric_code})
-                  -[r:BREACHES_THRESHOLD]->(a:AlertType)
-            OPTIONAL MATCH (a)-[:HAS_SEVERITY]->(s:Severity)
+                  -[r:TRIGGERS]->(a:Alert)
             WHERE r.effective_weight >= $min_weight
-            RETURN a.entity_code, a.name, s.entity_code, r.effective_weight
+            RETURN a.entity_code, a.name, r.effective_weight
         """
         try:
             async with self.driver.session(
@@ -117,12 +116,10 @@ class KnowledgeService:
                 result = await session.run(
                     """
                     MATCH (m:Metric {entity_code: $metric_code})
-                          -[r:BREACHES_THRESHOLD]->(a:AlertType)
+                          -[r:TRIGGERS]->(a:Alert)
                     WHERE r.effective_weight >= $min_weight AND r.enabled = true
-                    OPTIONAL MATCH (a)-[:HAS_SEVERITY]->(s:Severity)
                     RETURN a.entity_code AS alert_code,
                            a.name AS alert_name,
-                           s.entity_code AS severity_code,
                            r.effective_weight AS weight
                     LIMIT 1
                     """,
@@ -131,15 +128,10 @@ class KnowledgeService:
                 )
                 record = await result.single()
                 if record:
-                    sev = (
-                        Severity(record["severity_code"])
-                        if record["severity_code"]
-                        else (severity or Severity.WARNING)
-                    )
-                    return AlertTypeResult(
+                    return AlertResult(
                         alert_code=record["alert_code"],
                         metric_code=metric_code,
-                        severity=sev,
+                        severity=severity or Severity.WARNING,
                         effective_weight=record["weight"],
                         description=record.get("alert_name", ""),
                         from_neo4j=True,
@@ -154,7 +146,7 @@ class KnowledgeService:
         # 降级：使用内置默认映射
         default = _DEFAULT_METRIC_ALERT_MAP.get(metric_code)
         if default:
-            return AlertTypeResult(
+            return AlertResult(
                 alert_code=default["alert_code"],
                 metric_code=metric_code,
                 severity=default["severity"],
