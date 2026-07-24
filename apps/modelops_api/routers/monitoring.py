@@ -412,6 +412,8 @@ async def trigger_run(
 
     all_metrics: list[MetricResult] = []
     all_alerts: list[AlertDetail] = []
+    all_drift_rows: list[dict] = []
+    all_quality_rows: list[dict] = []
 
     for window_id, w_df in WINDOWS:
         w_source = w_df.drop(columns=["risk_score"]) if "risk_score" in w_df.columns else w_df
@@ -433,6 +435,14 @@ async def trigger_run(
         )
         all_metrics.extend(metrics)
         all_alerts.extend(alerts)
+        all_drift_rows.extend(w_drift)
+        all_quality_rows.extend(w_qual)
+
+    # ── 持久化 per-feature drift ──
+    if all_drift_rows:
+        drift_count = await service.repo.batch_insert_feature_drift(
+            monitoring_run_id, all_drift_rows, all_quality_rows,
+        )
 
     # ── 完成运行 ──
     has_alerts = len(all_alerts) > 0

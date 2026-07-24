@@ -102,7 +102,138 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
 
 
 async def diagnosis_node(state: ModelLifecycleState) -> dict:
-    """Mock：模拟任务二诊断。"""
+    """任务二诊断节点：调用 DiagnosisService 执行真实 D/R/C/T/I 根因诊断。
+
+    从 PostgreSQL 读取 monitoring_alerts 构建 AlertContext，
+    传给 DiagnosisService.diagnose() 走完整六步管线。
+    基础设施故障时降级到 Mock 行为。
+    """
+    monitoring_run_id = state.get("monitoring_run_id")
+    lifecycle_run_id = state.get("lifecycle_run_id")
+
+    if not monitoring_run_id:
+        logger.warning("diagnosis_node_missing_monitoring_run_id")
+        return _diagnosis_fallback()
+
+    try:
+        from ...database import async_session
+        from ...neo4j_db import get_neo4j_driver
+        from ...repositories.diagnosis_repo import DiagnosisRepo
+        from ...repositories.monitoring_repo import MonitoringRepo
+        from ...services.diagnosis.diagnosis_service import DiagnosisService
+        from ...services.knowledge_service import KnowledgeService
+        from packages.models.monitoring.alert_context import AlertContext, AlertDetail
+        from packages.models.common.enums import DataTrack, Severity
+
+        async with async_session() as session:
+            driver = await get_neo4j_driver()
+            knowledge = KnowledgeService(driver)
+            mon_repo = MonitoringRepo(session)
+            diag_repo = DiagnosisRepo(session)
+
+            # ── 1. 加载监控运行的告警数据 ──
+            run = await mon_repo.get_run(monitoring_run_id)
+            alerts = await mon_repo.get_alerts(monitoring_run_id)
+
+            if not alerts:
+                logger.info("diagnosis_node_no_alerts_skipping")
+                return {
+                    "diagnosis_run_id": None,
+                    "primary_root_cause_code": "no_alerts",
+                    "primary_root_cause_dimension": None,
+                    "primary_root_cause_score": 0.0,
+                    "recommended_action": "CONTINUE_OBSERVATION",
+                    "need_iteration": False,
+                    "current_phase": LifecyclePhase.DIAGNOSIS_COMPLETED.value,
+                }
+
+            # ── 2. 构建 AlertContext ──
+            alert_details = []
+            for a in alerts:
+                alert_details.append(
+                    AlertDetail(
+                        alert_id=a["alert_id"],
+                        alert_code=a["alert_code"],
+                        severity=Severity(a["severity"]) if a.get("severity") else Severity.WARNING,
+                        object_type=a.get("object_type", "MODEL"),
+                        object_code=a.get("object_code", state["model_id"]),
+                        metric_code=a.get("metric_code", ""),
+                        metric_version=a.get("metric_version", "V1"),
+                        baseline_value=a.get("baseline_value"),
+                        current_value=a.get("current_value"),
+                        delta=a.get("delta"),
+                        threshold=a.get("threshold"),
+                        rule_type=a.get("rule_type"),
+                        threshold_rule_id=a.get("threshold_rule_id"),
+                        threshold_rule_version=a.get("threshold_rule_version"),
+                        availability_status=a.get("availability_status", "AVAILABLE"),
+                        metric_detail=a.get("alert_detail"),
+                    )
+                )
+
+            alert_context = AlertContext(
+                schema_version="1.0",
+                trace_id=str(uuid.uuid4()),
+                monitoring_run_id=monitoring_run_id,
+                model_id=state["model_id"],
+                model_version=state["champion_version"],
+                monitor_window_id=run.get("current_window_id", "") if run else "",
+                baseline_id=run.get("baseline_window_id", "") if run else "",
+                data_track=DataTrack(run.get("data_track", "NATURAL")) if run else DataTrack.NATURAL,
+                alert_details=alert_details,
+            )
+
+            # ── 3. 执行诊断 ──
+            service = DiagnosisService(
+                session=session,
+                knowledge=knowledge,
+                repo=diag_repo,
+            )
+            result = await service.diagnose(
+                alert_context=alert_context,
+                monitoring_run_id=monitoring_run_id,
+                lifecycle_run_id=lifecycle_run_id,
+            )
+
+            logger.info(
+                "diagnosis_node_completed",
+                diagnosis_run_id=result.diagnosis_run_id,
+                primary_root_cause_code=result.primary_root_cause_code,
+                primary_root_cause_score=result.primary_root_cause_score,
+                recommended_action=result.recommended_action.value
+                if result.recommended_action else None,
+            )
+
+            return {
+                "diagnosis_run_id": result.diagnosis_run_id,
+                "primary_root_cause_code": result.primary_root_cause_code,
+                "primary_root_cause_dimension": (
+                    result.primary_root_cause_dimension.value
+                    if result.primary_root_cause_dimension
+                    else None
+                ),
+                "primary_root_cause_score": result.primary_root_cause_score,
+                "recommended_action": (
+                    result.recommended_action.value
+                    if result.recommended_action
+                    else "MANUAL_REVIEW"
+                ),
+                "need_iteration": result.need_iteration,
+                "current_phase": LifecyclePhase.DIAGNOSIS_COMPLETED.value,
+            }
+
+    except (OSError, ConnectionError, TimeoutError):
+        logger.warning(
+            "diagnosis_node_infra_failed_falling_back_to_mock",
+            monitoring_run_id=monitoring_run_id,
+            exc_info=True,
+        )
+        return _diagnosis_fallback()
+    # 其他异常（代码 bug、Pydantic 校验失败等）不吞掉，直接抛出
+
+
+def _diagnosis_fallback() -> dict:
+    """诊断节点降级 Mock — 基础设施不可用时的兜底行为。"""
     run_id = str(uuid.uuid4())
     if MOCK_NEED_ITERATION is True:
         return {
@@ -124,7 +255,6 @@ async def diagnosis_node(state: ModelLifecycleState) -> dict:
             "need_iteration": False,
             "current_phase": LifecyclePhase.DIAGNOSIS_COMPLETED.value,
         }
-    # None → 无法判断
     return {
         "diagnosis_run_id": run_id,
         "primary_root_cause_code": "uncertain",

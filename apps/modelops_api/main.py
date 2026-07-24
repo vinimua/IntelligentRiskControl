@@ -14,7 +14,7 @@ from starlette.responses import Response
 from .config import settings
 from .core.exceptions import register_exception_handlers
 from .core.logging_config import configure_logging, trace_id_var
-from .routers import dashboard, health, knowledge, models, monitoring, workflow
+from .routers import dashboard, diagnosis, health, knowledge, models, monitoring, workflow
 
 
 class TraceIdMiddleware(BaseHTTPMiddleware):
@@ -72,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(workflow.router)
     app.include_router(knowledge.router)
+    app.include_router(diagnosis.router)
     app.include_router(monitoring.router)
 
     return app

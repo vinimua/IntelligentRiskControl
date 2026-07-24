@@ -271,3 +271,58 @@ class KnowledgeService:
                 exc_info=True,
             )
         return relations
+
+    async def query_candidate_root_causes(
+        self, alert_code: str
+    ) -> list["CandidateRootCause"]:
+        """查询告警对应的候选根因（Alert ─INDICATES→ RootCause ─BELONGS_TO→ Dimension）。
+
+        任务二诊断入口：给定告警代码，返回所有可能的根因及权重快照。
+        """
+        import uuid as _uuid
+
+        from packages.models.diagnosis.diagnosis_context import CandidateRootCause
+
+        candidates: list[CandidateRootCause] = []
+        try:
+            async with self.driver.session(
+                database="neo4j", default_access_mode="READ"
+            ) as session:
+                result = await session.run(
+                    """
+                    MATCH (a:Alert {entity_code: $alert_code})
+                          -[r:INDICATES]->(rc:RootCause)
+                    WHERE r.enabled = true
+                    OPTIONAL MATCH (rc)-[:BELONGS_TO]->(d:Dimension)
+                    RETURN a.entity_code AS alert_code,
+                           r.relation_key AS relation_key,
+                           rc.entity_code AS root_cause_code,
+                           d.entity_code AS dimension_code,
+                           r.effective_weight AS effective_weight,
+                           r.evidence_case_count AS evidence_case_count,
+                           r.confidence_lower_bound AS confidence_lower_bound,
+                           r.weight_version AS weight_version
+                    ORDER BY r.effective_weight DESC
+                    """,
+                    alert_code=alert_code,
+                )
+                async for record in result:
+                    candidates.append(
+                        CandidateRootCause(
+                            diagnosis_candidate_id=str(_uuid.uuid4()),
+                            alert_code=record["alert_code"],
+                            relation_key=record["relation_key"],
+                            root_cause_code=record["root_cause_code"],
+                            dimension_code=record["dimension_code"] or "UNKNOWN",
+                            effective_weight_snapshot=record["effective_weight"],
+                            evidence_case_count_snapshot=record["evidence_case_count"],
+                            confidence_lower_bound_snapshot=record["confidence_lower_bound"],
+                        )
+                    )
+        except Exception:
+            logger.warning(
+                "neo4j_query_candidate_root_causes_failed",
+                alert_code=alert_code,
+                exc_info=True,
+            )
+        return candidates

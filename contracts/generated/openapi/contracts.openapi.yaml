@@ -339,6 +339,94 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/diagnosis/runs:
+    get:
+      tags:
+      - diagnosis
+      summary: List Runs
+      operationId: list_runs_api_diagnosis_runs_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/diagnosis/runs/{diagnosis_run_id}:
+    get:
+      tags:
+      - diagnosis
+      summary: Get Run
+      operationId: get_run_api_diagnosis_runs__diagnosis_run_id__get
+      parameters:
+      - name: diagnosis_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Diagnosis Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/diagnosis/runs/by-monitoring/{monitoring_run_id}:
+    get:
+      tags:
+      - diagnosis
+      summary: Get Diagnosis By Monitoring
+      description: 查询某个监控运行对应的最新诊断结果（含候选排序 + 证据详情）。
+      operationId: get_diagnosis_by_monitoring_api_diagnosis_runs_by_monitoring__monitoring_run_id__get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/diagnosis/trigger:
+    post:
+      tags:
+      - diagnosis
+      summary: Trigger Diagnosis
+      description: 手动触发一次诊断（用于场景注入后的根因分析）。
+      operationId: trigger_diagnosis_api_diagnosis_trigger_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriggerDiagnosisRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/monitoring/runs:
     get:
       tags:
@@ -736,6 +824,22 @@ components:
       - model_id
       - champion_version
       title: StartRunRequest
+    TriggerDiagnosisRequest:
+      properties:
+        monitoring_run_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Monitoring Run Id
+        lifecycle_run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lifecycle Run Id
+      type: object
+      required:
+      - monitoring_run_id
+      title: TriggerDiagnosisRequest
     ValidationError:
       properties:
         loc:

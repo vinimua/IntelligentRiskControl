@@ -191,3 +191,103 @@ class MonitoringRepo:
             {"id": monitoring_run_id},
         )
         return [dict(row) for row in result.mappings()]
+
+    # ── monitoring_feature_drift ──
+
+    async def batch_insert_feature_drift(
+        self,
+        monitoring_run_id: str,
+        drift_rows: list[dict],
+        quality_rows: list[dict] | None = None,
+    ) -> int:
+        """批量持久化 per-feature drift + quality 数据。"""
+        if not drift_rows:
+            return 0
+
+        merged: dict[tuple[str, str], dict] = {}
+        for d in drift_rows:
+            key = (d.get("window_id", d.get("monitor_window_id", "?")),
+                   d.get("feature_name", "?"))
+            merged.setdefault(key, {}).update({
+                "feature_type": d.get("feature_type", "continuous"),
+                "psi": d.get("psi"),
+                "js_divergence": d.get("js_divergence"),
+                "wasserstein_distance": d.get("wasserstein_distance"),
+                "ks_statistic": d.get("ks_statistic"),
+                "ks_p_value": d.get("ks_p_value"),
+                "ks_q_value": d.get("ks_q_value"),
+                "data_track": d.get("data_track", "NATURAL"),
+            })
+
+        if quality_rows:
+            for q in quality_rows:
+                key = (q.get("window_id", q.get("monitor_window_id", "?")),
+                       q.get("feature_name", "?"))
+                target = merged.setdefault(key, {})
+                target.update({
+                    "missing_rate": q.get("missing_rate"),
+                    "missing_rate_delta": q.get("missing_rate_delta"),
+                    "outlier_rate": q.get("outlier_rate"),
+                    "outlier_rate_delta": q.get("outlier_rate_delta"),
+                    "default_value_rate": q.get("default_value_rate"),
+                    "range_violation_rate": q.get("range_violation_rate"),
+                    "unknown_category_rate": q.get("unknown_category_rate"),
+                    "dq_score": q.get("dq_score"),
+                    "dq_flag": q.get("dq_flag"),
+                })
+
+        inserted = 0
+        for (window_id, feature_name), fields in merged.items():
+            await self.session.execute(
+                text("""
+                    INSERT INTO monitoring.monitoring_feature_drift
+                        (monitoring_run_id, window_id, feature_name, feature_type,
+                         psi, js_divergence, wasserstein_distance,
+                         ks_statistic, ks_p_value, ks_q_value,
+                         missing_rate, missing_rate_delta,
+                         outlier_rate, outlier_rate_delta,
+                         default_value_rate, range_violation_rate,
+                         unknown_category_rate, dq_score, dq_flag,
+                         data_track)
+                    VALUES (:rid, :wid, :fname, :ftype,
+                            :psi, :js, :wd,
+                            :ks, :ksp, :ksq,
+                            :mr, :mrd,
+                            :orr, :ord,
+                            :dvr, :rvr,
+                            :ucr, :dq, :dqf,
+                            :track)
+                """),
+                {
+                    "rid": monitoring_run_id, "wid": window_id,
+                    "fname": feature_name, "ftype": fields.get("feature_type", "continuous"),
+                    "psi": fields.get("psi"), "js": fields.get("js_divergence"),
+                    "wd": fields.get("wasserstein_distance"),
+                    "ks": fields.get("ks_statistic"), "ksp": fields.get("ks_p_value"),
+                    "ksq": fields.get("ks_q_value"),
+                    "mr": fields.get("missing_rate"), "mrd": fields.get("missing_rate_delta"),
+                    "orr": fields.get("outlier_rate"), "ord": fields.get("outlier_rate_delta"),
+                    "dvr": fields.get("default_value_rate"), "rvr": fields.get("range_violation_rate"),
+                    "ucr": fields.get("unknown_category_rate"),
+                    "dq": fields.get("dq_score"), "dqf": fields.get("dq_flag"),
+                    "track": fields.get("data_track", "NATURAL"),
+                },
+            )
+            inserted += 1
+        return inserted
+
+    async def get_feature_drift_by_run(
+        self, monitoring_run_id: str, window_id: str | None = None
+    ) -> list[dict]:
+        """查询一次运行的 per-feature drift 数据。"""
+        sql = """
+            SELECT * FROM monitoring.monitoring_feature_drift
+            WHERE monitoring_run_id = :rid
+        """
+        params: dict = {"rid": monitoring_run_id}
+        if window_id:
+            sql += " AND window_id = :wid"
+            params["wid"] = window_id
+        sql += " ORDER BY window_id, psi DESC NULLS LAST"
+        result = await self.session.execute(text(sql), params)
+        return [dict(row) for row in result.mappings()]
