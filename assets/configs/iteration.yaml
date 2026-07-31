@@ -1,0 +1,30 @@
+rule_version: iteration-rules-v1
+max_iteration_rounds: 3
+max_technical_retries: 3
+oscillation_threshold: 3
+training_window_policy: W1_W3_ONLY
+baseline_window_id: W1
+default_training_window_ids: [W2]
+default_validation_window_ids: [W3]
+oot_window_id: W4
+allowed_strategy_codes:
+  - champion_replay
+  - stable_refit
+  - recent_weighted_retrain
+  - sliding_window_retrain
+  - segment_weighted_retrain
+  - regularized_retrain
+  - feature_reconstruction
+  - full_retrain
+  - calibration_only
+  - threshold_only
+root_cause_gate:
+  min_primary_score: 0.75
+  min_top1_top2_gap: 0.15
+  min_evidence_coverage: 0.70
+missing_rates:
+  watch: 0.05
+  warning: 0.10
+  critical: 0.20
+  unavailable: 0.40
+  label_training_block: 0.20

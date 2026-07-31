@@ -1,0 +1,7 @@
+rule_version: qualification-rules-v1
+min_recovery_rate: 0.60
+max_score_psi: 0.20
+max_train_valid_gap: 0.03
+required_oot_window_id: W4
+require_healthy_range: true
+require_same_sample_bootstrap: true

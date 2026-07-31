@@ -1,0 +1,13 @@
+raw_train_uri: data/raw/train_data.csv
+raw_test_uri: data/raw/test_data.csv
+window_manifest_uri: data/contracts/window_manifest.csv
+feature_domain_uri: data/contracts/feature_domain_map.csv
+windows_root: data/windows
+feature_schema_version: credit_features_v1
+sample_id_namespace: risk-monitoring-v1
+windows:
+  W0: {data_role: TRAIN_REFERENCE, source: TRAIN}
+  W1: {data_role: NATURAL_REPLAY, source: TRAIN}
+  W2: {data_role: NATURAL_REPLAY, source: TRAIN}
+  W3: {data_role: NATURAL_REPLAY, source: TRAIN}
+  W4: {start_date: "2026-01-01", end_date: "2026-02-01", data_role: OOT_HOLDOUT, source: TEST, locked: true}

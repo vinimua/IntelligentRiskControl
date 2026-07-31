@@ -1,0 +1,222 @@
+{
+  "baseline_id": "credit_model_023_baseline",
+  "model_id": "credit_model_023",
+  "model_version": "champion_v1",
+  "baseline_version": "baseline_v1",
+  "baseline_status": "ACTIVE",
+  "source_mode": "W0_FIXED",
+  "reference_window_ids": [
+    "W0"
+  ],
+  "reference_dataset_uri": "data/windows/W0/data.parquet",
+  "feature_schema_version": "124513a9139fe16f",
+  "feature_profile_uri": "artifacts/baselines/credit_model_023/champion_v1/baseline_v1/feature_profile.parquet",
+  "score_profile_uri": "artifacts/baselines/credit_model_023/champion_v1/baseline_v1/score_profile.parquet",
+  "performance_reference_json": {
+    "auc": 0.972134727593728,
+    "ks": 0.8384560050312216,
+    "pr_auc": 0.7786336047479778,
+    "brier": 0.014924704449168259,
+    "ece": 0.0028541283736813645,
+    "bad_recall": 0.9595613433858807,
+    "bad_rate": 0.03922253884617453
+  },
+  "binning_rules_json": {
+    "social_score": {
+      "feature_type": "continuous",
+      "edges": [
+        299.999399999,
+        452.68,
+        503.634,
+        538.39,
+        568.1840000000001,
+        596.94,
+        625.1840000000001,
+        654.478,
+        689.9159999999999,
+        739.2190000000002,
+        900.000600001
+      ],
+      "categories": []
+    },
+    "telecom_score": {
+      "feature_type": "continuous",
+      "edges": [
+        -0.000100001,
+        34.97,
+        45.32,
+        52.81,
+        59.0,
+        64.92,
+        70.64,
+        76.86899999999999,
+        84.06,
+        94.2,
+        100.000100001
+      ],
+      "categories": []
+    },
+    "ecomm_risk_score": {
+      "feature_type": "continuous",
+      "edges": [
+        -0.000100001,
+        15.817000000000004,
+        27.95,
+        36.95,
+        44.66,
+        51.76,
+        59.04,
+        66.61899999999999,
+        75.36,
+        88.10300000000002,
+        100.000100001
+      ],
+      "categories": []
+    },
+    "judicial_risk_score": {
+      "feature_type": "continuous",
+      "edges": [
+        -0.000100001,
+        5.75,
+        11.16,
+        16.4,
+        21.51,
+        27.02,
+        33.35,
+        42.52,
+        100.000100001
+      ],
+      "categories": []
+    },
+    "device_risk_score": {
+      "feature_type": "continuous",
+      "edges": [
+        0.009998999000000001,
+        0.0961,
+        0.1306,
+        0.16,
+        0.1883,
+        0.2165,
+        0.24622000000000044,
+        0.281,
+        0.323,
+        0.3848,
+        0.772701001
+      ],
+      "categories": []
+    },
+    "blacklist_hit": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "0",
+        "1"
+      ]
+    },
+    "gps_anomaly": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "0",
+        "1"
+      ]
+    },
+    "emulator_flag": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "0",
+        "1"
+      ]
+    },
+    "login_fail_count": {
+      "feature_type": "continuous",
+      "edges": [
+        -1.2001e-05,
+        1.0,
+        2.0,
+        3.0,
+        12.000012001
+      ],
+      "categories": []
+    },
+    "ip_change_freq": {
+      "feature_type": "continuous",
+      "edges": [
+        -9.001e-06,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        9.000009001
+      ],
+      "categories": []
+    },
+    "overdue_history": {
+      "feature_type": "continuous",
+      "edges": [
+        -1.0001e-05,
+        1.0,
+        2.0,
+        3.0,
+        10.000010001
+      ],
+      "categories": []
+    },
+    "debt_income_ratio": {
+      "feature_type": "continuous",
+      "edges": [
+        0.009998009,
+        0.0424,
+        0.09084000000000006,
+        0.1447,
+        0.2068,
+        0.27805,
+        0.3687,
+        0.4863,
+        0.6482600000000002,
+        0.9191300000000003,
+        2.000001991
+      ],
+      "categories": []
+    },
+    "__risk_score__": {
+      "feature_type": "continuous",
+      "edges": [
+        -1.001e-06,
+        0.0028208745643496513,
+        0.007614213041961193,
+        0.04395604506134987,
+        1.000001001
+      ],
+      "categories": []
+    }
+  },
+  "metric_thresholds_json": {
+    "rolling": {
+      "min_samples": 2000,
+      "min_bad": 50,
+      "trend_window_count": 5
+    },
+    "metrics": {
+      "ece_bins": 10,
+      "bad_recall_cutoff": 0.2,
+      "epsilon": 1e-06
+    },
+    "data_quality": {
+      "outlier_mad_k": 3.0,
+      "missing_warn": 0.05,
+      "range_warn": 0.01,
+      "unknown_warn": 0.01
+    },
+    "drift": {
+      "psi_warn": 0.1,
+      "psi_alert": 0.25,
+      "js_warn": 0.1,
+      "ks_q_warn": 0.05
+    }
+  },
+  "created_at": "2026-07-18T09:22:35.258806Z",
+  "approved_by": "integration_team",
+  "production_ready": false
+}

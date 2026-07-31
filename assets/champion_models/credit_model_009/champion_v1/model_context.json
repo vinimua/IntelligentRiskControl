@@ -1,0 +1,14 @@
+{
+  "model_id": "credit_model_009",
+  "model_version": "champion_v1",
+  "model_role": "champion",
+  "algorithm_family": "RandomForest",
+  "prediction_threshold": 0.0625,
+  "score_field": "calibrated_pd",
+  "feature_schema_version": "fde9f626420f3368",
+  "baseline_id": "credit_model_009_baseline",
+  "baseline_version": "baseline_v1",
+  "lifecycle_status": "CHAMPION_V1_W1_HEALTHY",
+  "competition_monitoring_enabled": true,
+  "production_ready": false
+}

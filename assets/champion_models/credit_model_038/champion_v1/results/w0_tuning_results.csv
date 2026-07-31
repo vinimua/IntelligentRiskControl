@@ -1,0 +1,3 @@
+candidate_id,parameters_json,w0_tune_roc_auc,fit_seconds,status,error
+1,"{""auto_class_weights"": null, ""depth"": 5, ""iterations"": 600, ""l2_leaf_reg"": 5, ""learning_rate"": 0.02, ""random_strength"": 1.0}",0.9462488999486259,1.5426552499993704,PASS,
+2,"{""auto_class_weights"": ""Balanced"", ""depth"": 7, ""iterations"": 900, ""l2_leaf_reg"": 12, ""learning_rate"": 0.05, ""random_strength"": 2.0}",0.9401218480368083,4.603754999989178,PASS,

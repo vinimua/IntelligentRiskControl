@@ -1,0 +1,2 @@
+{"env": "development", "event": "modelops_api_starting", "level": "info", "timestamp": "2026-07-27T08:51:52.921545Z"}
+{"event": "127.0.0.1:56555 - \"GET / HTTP/1.1\" 200", "trace_id": "91b959c3-7d18-47f0-9f4f-fb191d114fe4", "level": "info", "timestamp": "2026-07-27T08:51:53.444401Z"}

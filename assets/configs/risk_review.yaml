@@ -1,0 +1,17 @@
+rule_version: risk-review-v1
+manual_review_min_level: HIGH
+medium_risk_strategy_codes:
+  - recent_weighted_retrain
+  - sliding_window_retrain
+  - segment_weighted_retrain
+  - regularized_retrain
+  - calibration_only
+high_risk_strategy_codes:
+  - threshold_only
+  - feature_reconstruction
+  - full_retrain
+high_risk_root_cause_codes:
+  - FRAUD_PATTERN_SHIFT
+  - POLICY_CHANGE
+high_risk_actions:
+  - THRESHOLD_ADJUSTMENT

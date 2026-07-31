@@ -1,0 +1,14 @@
+{
+  "model_id": "credit_model_037",
+  "model_version": "champion_v1",
+  "model_role": "champion",
+  "algorithm_family": "CatBoost",
+  "prediction_threshold": 0.06976744186046512,
+  "score_field": "calibrated_pd",
+  "feature_schema_version": "6f36c63dfda7537e",
+  "baseline_id": "credit_model_037_baseline",
+  "baseline_version": "baseline_v1",
+  "lifecycle_status": "CHAMPION_V1_W1_HEALTHY",
+  "competition_monitoring_enabled": true,
+  "production_ready": false
+}

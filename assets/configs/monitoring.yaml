@@ -1,0 +1,18 @@
+rolling:
+  min_samples: 2000
+  min_bad: 50
+  trend_window_count: 5
+metrics:
+  ece_bins: 10
+  bad_recall_cutoff: 0.20
+  epsilon: 1.0e-6
+data_quality:
+  outlier_mad_k: 3.0
+  missing_warn: 0.05
+  range_warn: 0.01
+  unknown_warn: 0.01
+drift:
+  psi_warn: 0.10
+  psi_alert: 0.25
+  js_warn: 0.10
+  ks_q_warn: 0.05

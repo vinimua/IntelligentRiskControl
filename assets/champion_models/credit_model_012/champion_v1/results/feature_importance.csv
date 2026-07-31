@@ -1,0 +1,13 @@
+feature,importance
+numeric__login_fail_count,0.5495494604869963
+numeric__overdue_history,0.11430913659287585
+numeric__judicial_risk_score,0.09241456492348978
+numeric__social_score,0.0774727211365632
+numeric__telecom_score,0.04210940700583632
+numeric__ecomm_risk_score,0.03078426524007658
+numeric__emulator_flag,0.022290222535263915
+numeric__debt_income_ratio,0.018381386274121118
+numeric__device_risk_score,0.01818248829822355
+numeric__blacklist_hit,0.01697773562230384
+numeric__gps_anomaly,0.011282308810476685
+numeric__ip_change_freq,0.00624630307377289

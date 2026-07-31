@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>场景注入 × 知识图谱 — 可视化</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  body { font: 14px/1.6 system-ui,sans-serif; background: #0d1117; color: #c5d1de; padding: 24px; max-width: 1200px; margin: 0 auto; }
+  h1 { color: #58a6ff; font-size: 22px; }
+  h2 { color: #e6edf3; font-size: 16px; margin-top: 32px; border-bottom: 1px solid #21262d; padding-bottom: 4px; }
+  h3 { color: #8b949e; font-size: 13px; margin-top: 20px; }
+  .mermaid { background: #0d1117; padding: 16px; border: 1px solid #21262d; border-radius: 8px; margin: 12px 0; }
+  .card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 16px; margin: 16px 0; }
+  .step { display: flex; gap: 16px; align-items: center; margin: 8px 0; }
+  .step-num { background: #1f6feb; color: #fff; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
+  .step-text { flex: 1; }
+  .highlight { background: #1a2e3d; border: 1px solid #58a6ff; border-radius: 4px; padding: 2px 6px; font-family: monospace; font-size: 12px; color: #58a6ff; }
+  .tag-scenario { background: #3d2e00; color: #d29922; padding: 1px 6px; border-radius: 8px; font-size: 10px; }
+  .tag-natural { background: #1a3825; color: #3fb950; padding: 1px 6px; border-radius: 8px; font-size: 10px; }
+  code { background: #1c2128; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+  .scenario-card { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 12px; }
+  .scenario-card h4 { color: #e6edf3; font-size: 12px; margin-bottom: 4px; }
+  .scenario-card p { color: #8b949e; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<h1>场景注入 × 知识图谱 — 因果发现全链路</h1>
+
+<!-- ── 总览 ── -->
+<h2>一、系统架构全景</h2>
+<div class="mermaid">
+flowchart TB
+    subgraph 自然监控["自然监控链路 (已有)"]
+        A1[Parquet W0-W3] --> A2[Champion模型预测]
+        A2 --> A3[_monitor_one]
+        A3 --> A4[(PostgreSQL<br/>monitoring_metrics<br/>1614条/模型)]
+        A4 --> A5[Dashboard<br/>30模型表格+详情]
+    end
+
+    subgraph 场景注入["场景注入链路 (新增)"]
+        B1[ScenarioFactory<br/>12种破坏方式] --> B2[W3隔离副本<br/>30%样本被修改]
+        B2 --> B3[_monitor_one<br/>注入后数据]
+        B3 --> B4[对比分析<br/>clean_control vs injected]
+        B4 --> B5[提炼因果信号<br/>SUPPORT/AGAINST]
+        B5 --> B6[(PostgreSQL<br/>kg_relation_observations)]
+        B6 --> B7[校准作业<br/>聚合观测]
+        B7 --> B8[(Neo4j<br/>MAY_CAUSE权重更新)]
+    end
+
+    A3 -.-> B1
+    B8 -.-> 自然监控
+</div>
+
+<!-- ── 七步流程 ── -->
+<h2>二、单次实验七步流程</h2>
+
+<div class="card">
+<div class="step"><div class="step-num">1</div><div class="step-text"><b>加载数据</b> — W3 Parquet + Champion模型预测 → 1485行 × 40特征</div></div>
+<div class="step"><div class="step-num">2</div><div class="step-text"><b>Clean Control</b> — <code>ScenarioFactory.inject(w3, {scenario:"clean_control"})</code> → 不破坏，作为基准组</div></div>
+<div class="step"><div class="step-num">3</div><div class="step-text"><b>注入破坏</b> — <code>ScenarioFactory.inject(w3, {scenario:"covariate_drift", intensity:0.3, affected:["loan_amount_request"]})</code> → 30%样本加2.5σ偏移</div></div>
+<div class="step"><div class="step-num">4</div><div class="step-text"><b>跑监控</b> — <code>_monitor_one(注入副本)</code> → 得到 performance + drift + quality</div></div>
+<div class="step"><div class="step-num">5</div><div class="step-text"><b>对比分析</b> — ΔAUC = 0 (没降!), PSI=0.35 (漂移很大) → 结论：单特征漂移不致命</div></div>
+<div class="step"><div class="step-num">6</div><div class="step-text"><b>生成观测</b> — <span class="highlight">loan_amount_request → MAY_CAUSE → AUC_DROP [AGAINST]</span> evidence_score=0.10</div></div>
+<div class="step"><div class="step-num">7</div><div class="step-text"><b>写库</b> — PostgreSQL <code>kg_relation_observations</code> → 校准后更新 Neo4j <code>MAY_CAUSE</code> 权重</div></div>
+</div>
+
+<!-- ── 12场景 ── -->
+<h2>三、12 种破坏场景</h2>
+<div class="grid3">
+<div class="scenario-card"><h4>covariate_drift</h4><p>单特征加2.5σ偏移 | PSI↑, AUC?</p></div>
+<div class="scenario-card"><h4>numeric_scaling_anomaly</h4><p>特征乘5倍 | PSI↑↑, AUC?</p></div>
+<div class="scenario-card"><h4>missing_rate_anomaly</h4><p>30%样本设为NaN | MISSING↑, AUC?</p></div>
+<div class="scenario-card"><h4>feature_staleness</h4><p>特征值用旧值替换 | PSI↑, 时差相关</p></div>
+<div class="scenario-card"><h4>key_feature_failure</h4><p>指定特征全设0 | 特征完全失效</p></div>
+<div class="scenario-card"><h4>multi_root_cause</h4><p>同时NaN+乘倍数 | 复合效应</p></div>
+<div class="scenario-card"><h4>concept_drift</h4><p>随机打乱is_bad标签 | AUC↓↓, Brier↑↑</p></div>
+<div class="scenario-card"><h4>bad_rate_shift</h4><p>随机造坏样本 | BAD_RATE↑, AUC↓</p></div>
+<div class="scenario-card"><h4>fraud_pattern_shift</h4><p>表面正常→改坏 | AUC↓</p></div>
+<div class="scenario-card"><h4>customer_mix_shift</h4><p>高风险人群替换 | 分布整体变化</p></div>
+<div class="scenario-card"><h4>policy_selection_shift</h4><p>高负债样本替换 | 选择偏置</p></div>
+<div class="scenario-card"><h4>preprocessing_mismatch</h4><p>Z-score标准化 | 完全量纲变化</p></div>
+</div>
+
+<!-- ── 数据流 ── -->
+<h2>四、数据存储三层</h2>
+<div class="mermaid">
+flowchart LR
+    subgraph PG1["PostgreSQL (运行事实)"]
+        MM[monitoring.metrics<br/>current/baseline/delta<br/>+ data_track: SCENARIO<br/>+ scenario_id]
+    end
+
+    subgraph PG2["PostgreSQL (证据层)"]
+        OBS[kg_relation_observations<br/>source_entity<br/>relation: MAY_CAUSE<br/>target_entity<br/>direction: SUPPORT/AGAINST<br/>evidence_score<br/>data_track: SCENARIO/NATURAL]
+    end
+
+    subgraph KG["Neo4j (因果规则)"]
+        F[34 Feature] -->|MONITORED_BY| M[15 Metric]
+        M -->|TRIGGERS| A[12 Alert]
+        F -.->|MAY_CAUSE<br/>effective_weight| A
+    end
+
+    MM -->|每次run后分析| OBS
+    OBS -->|校准作业聚合| KG
+</div>
+
+<!-- ── 图谱结构 ── -->
+<h2>五、Neo4j 图谱结构</h2>
+<div class="mermaid">
+graph TD
+    subgraph Feature["Feature (34个)"]
+        F1[credit_query_times<br/>征信查询次数]
+        F2[loan_amount_request<br/>申请贷款金额]
+        F3[income_level<br/>收入水平]
+        F4[...]
+    end
+
+    subgraph Metric["Metric (15个)"]
+        M1[AUC]
+        M2[KS]
+        M3[FEATURE_PSI]
+        M4[MISSING_RATE]
+        M5[BRIER]
+        M6[...]
+    end
+
+    subgraph Alert["Alert (12个)"]
+        A1[AUC_DROP]
+        A2[KS_DROP]
+        A3[HIGH_FEATURE_PSI]
+        A4[MISSING_RATE_SPIKE]
+        A5[CALIBRATION_DEGRADE]
+        A6[...]
+    end
+
+    F1 -->|MONITORED_BY| M4
+    F1 -->|MONITORED_BY| M3
+    F2 -->|MONITORED_BY| M3
+    F3 -->|MONITORED_BY| M4
+
+    M1 -->|TRIGGERS<br/>w=1.0| A1
+    M2 -->|TRIGGERS<br/>w=1.0| A2
+    M3 -->|TRIGGERS<br/>w=1.0| A3
+    M4 -->|TRIGGERS<br/>w=1.0| A4
+    M5 -->|TRIGGERS<br/>w=1.0| A5
+
+    F2 -.->|MAY_CAUSE<br/>w=0.15| A1
+    F3 -.->|MAY_CAUSE<br/>w=0.08| A1
+
+    style MAY_CAUSE stroke-dasharray: 5 5
+</div>
+<div style="font-size:11px;color:#8b949e;margin-top:4px">
+实线 = 确定性关系 (MONITORED_BY, TRIGGERS) | 虚线 = 动态因果权重 (MAY_CAUSE, 从注入经验中学习)
+</div>
+
+<!-- ── 预期结果 ── -->
+<h2>六、不同场景的预期因果信号</h2>
+<div class="card">
+<table style="width:100%;border-collapse:collapse">
+<tr style="color:#8b949e"><th style="text-align:left;padding:4px 8px">场景</th><th style="text-align:center;padding:4px 8px">ΔAUC预期</th><th style="text-align:center;padding:4px 8px">PSI预期</th><th style="text-align:left;padding:4px 8px">图谱信号</th></tr>
+<tr><td style="padding:4px 8px">covariate_drift</td><td style="text-align:center;color:#3fb950">≈0</td><td style="text-align:center;color:#d29922">↑↑</td><td style="color:#da3633">AGAINST — 单特征不致命</td></tr>
+<tr><td style="padding:4px 8px">multi_root_cause</td><td style="text-align:center;color:#da3633">&lt;0</td><td style="text-align:center;color:#d29922">↑↑</td><td style="color:#3fb950">SUPPORT — 复合才致命</td></tr>
+<tr><td style="padding:4px 8px">concept_drift</td><td style="text-align:center;color:#da3633">&lt;&lt;0</td><td style="text-align:center;color:#3fb950">≈0</td><td style="color:#3fb950">SUPPORT — 标签层致命</td></tr>
+<tr><td style="padding:4px 8px">key_feature_failure</td><td style="text-align:center;color:#da3633">&lt;0</td><td style="text-align:center;color:#d29922">↑</td><td style="color:#3fb950">SUPPORT — 特征失效</td></tr>
+<tr><td style="padding:4px 8px">missing_rate_anomaly</td><td style="text-align:center;color:#3fb950">≈0</td><td style="text-align:center;color:#d29922">↑</td><td style="color:#da3633">AGAINST — 模型补了NaN</td></tr>
+<tr><td style="padding:4px 8px">customer_mix_shift</td><td style="text-align:center;color:#da3633">&lt;0</td><td style="text-align:center;color:#d29922">↑↑</td><td style="color:#3fb950">SUPPORT — 人群漂移致命</td></tr>
+</table>
+</div>
+
+<!-- ── 查询示例 ── -->
+<h2>七、Cypher 查询根因</h2>
+<div class="card">
+<h3>AUC 下降时，哪些特征最可疑？</h3>
+<pre style="background:#0d1117;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto">
+MATCH (f:Feature)-[r:MAY_CAUSE]->(a:Alert {entity_code: "AUC_DROP"})
+WHERE r.effective_weight > 0.5
+RETURN f.entity_code, f.name, r.effective_weight, r.support_count
+ORDER BY r.effective_weight DESC
+</pre>
+</div>
+
+<div class="card">
+<h3>某个特征漂移会导致什么？</h3>
+<pre style="background:#0d1117;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto">
+MATCH (f:Feature {entity_code: "loan_amount_request"})
+      -[:MONITORED_BY]->(m:Metric)-[:TRIGGERS]->(a:Alert)
+OPTIONAL MATCH (f)-[r:MAY_CAUSE]->(a)
+RETURN m.entity_code, a.entity_code, r.effective_weight
+ORDER BY r.effective_weight DESC
+</pre>
+</div>
+
+<!-- ── 实验规模 ── -->
+<h2>八、实验规模</h2>
+<div class="grid2">
+<div class="card">
+<h3>完整实验</h3>
+<p>30模型 × 12场景 × 3强度 = <b>1080次</b></p>
+<p style="color:#8b949e;font-size:12px">≈ 1.5 小时</p>
+</div>
+<div class="card">
+<h3>最小可行</h3>
+<p>5模型 × 5场景 × 1强度 = <b>25次</b></p>
+<p style="color:#8b949e;font-size:12px">≈ 2 分钟</p>
+</div>
+</div>
+
+<script>mermaid.initialize({startOnLoad:true,theme:'dark',themeVariables:{fontFamily:'system-ui,sans-serif'}});</script>
+</body>
+</html>

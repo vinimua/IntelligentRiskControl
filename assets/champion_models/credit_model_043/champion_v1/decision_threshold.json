@@ -1,0 +1,12 @@
+{
+  "threshold_id": "credit_model_043_w0_threshold_v1",
+  "model_id": "credit_model_043",
+  "model_version": "champion_v1",
+  "score_field": "calibrated_pd",
+  "comparison": ">=",
+  "threshold": 0.03389830508474576,
+  "recall": 0.9251336898395722,
+  "fpr": 0.0600083927822073,
+  "ks": 0.865125297057365,
+  "high_risk_rate": 0.09267110841913992
+}

@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Force horizontal layout ── */
+.hbox { display: flex; gap: 20px; }
+.hbox > .col-side { width: 320px; flex-shrink: 0; }
+.hbox > .col-main { flex: 1; min-width: 0; }
+.hbox > .col-right { width: 360px; flex-shrink: 0; }
+
+.hbox-2 { display: flex; gap: 20px; }
+.hbox-2 > .col-a { flex: 1; min-width: 0; }
+.hbox-2 > .col-b { flex: 1; min-width: 0; }
+
+.card-grid { display: flex; gap: 12px; flex-wrap: wrap; }
+.card-grid > * { flex: 1; min-width: 160px; }
+
+@media (max-width: 900px) {
+  .hbox, .hbox-2 { flex-direction: column; }
+  .hbox > .col-side, .hbox > .col-right { width: 100%; }
+}

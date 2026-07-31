@@ -1,0 +1,87 @@
+{
+  "schema_version": "champion_feature_schema/1.0",
+  "ordered_features": [
+    "social_score",
+    "telecom_score",
+    "ecomm_risk_score",
+    "judicial_risk_score",
+    "device_risk_score",
+    "blacklist_hit",
+    "gps_anomaly",
+    "emulator_flag",
+    "login_fail_count",
+    "ip_change_freq",
+    "overdue_history",
+    "debt_income_ratio"
+  ],
+  "fields": [
+    {
+      "name": "social_score",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "telecom_score",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "ecomm_risk_score",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "judicial_risk_score",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "device_risk_score",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "blacklist_hit",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "gps_anomaly",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "emulator_flag",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "login_fail_count",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "ip_change_freq",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "overdue_history",
+      "kind": "numeric",
+      "nullable": true
+    },
+    {
+      "name": "debt_income_ratio",
+      "kind": "numeric",
+      "nullable": true
+    }
+  ],
+  "model_id": "credit_model_034",
+  "model_version": "champion_v1",
+  "feature_strategy_id": "F04",
+  "forbidden_model_inputs": [
+    "id_card",
+    "apply_time",
+    "is_bad"
+  ]
+}

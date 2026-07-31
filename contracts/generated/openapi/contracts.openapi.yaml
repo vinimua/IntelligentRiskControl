@@ -1,0 +1,2374 @@
+openapi: 3.1.0
+info:
+  title: RiskItem ModelOps API
+  version: 0.1.0
+  description: 信贷风控模型智能监测与自主迭代系统 API。由 scripts/generate_openapi.py 从 FastAPI app 自动生成，不手工维护。
+paths:
+  /health/live:
+    get:
+      tags:
+      - health
+      summary: Health Live
+      description: 存活检查 — 进程是否在运行。
+      operationId: health_live_health_live_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /health/ready:
+    get:
+      tags:
+      - health
+      summary: Health Ready
+      description: 就绪检查 — 依赖服务是否可用。
+      operationId: health_ready_health_ready_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/models:
+    get:
+      tags:
+      - models
+      summary: List Models
+      operationId: list_models_api_models_get
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^(ACTIVE|INACTIVE|RETIRED)$
+          - type: 'null'
+          title: Status
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - models
+      summary: Register Model
+      operationId: register_model_api_models_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterModelRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/models/{model_id}:
+    get:
+      tags:
+      - models
+      summary: Get Model
+      operationId: get_model_api_models__model_id__get
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/models/{model_id}/versions:
+    post:
+      tags:
+      - models
+      summary: Register Version
+      operationId: register_version_api_models__model_id__versions_post
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Model Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterVersionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/models/{model_id}/data-windows:
+    get:
+      tags:
+      - models
+      summary: List Data Windows
+      operationId: list_data_windows_api_models__model_id__data_windows_get
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/lifecycle-runs:
+    post:
+      tags:
+      - workflow
+      summary: Start Run
+      operationId: start_run_api_lifecycle_runs_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartRunRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/lifecycle-runs/{lifecycle_run_id}:
+    get:
+      tags:
+      - workflow
+      summary: Get Run
+      operationId: get_run_api_lifecycle_runs__lifecycle_run_id__get
+      parameters:
+      - name: lifecycle_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Lifecycle Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/lifecycle-runs/{lifecycle_run_id}/resume:
+    post:
+      tags:
+      - workflow
+      summary: Resume Run
+      operationId: resume_run_api_lifecycle_runs__lifecycle_run_id__resume_post
+      parameters:
+      - name: lifecycle_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Lifecycle Run Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResumeRequest'
+              default:
+                decision: approved
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/lifecycle-runs/{lifecycle_run_id}/cancel:
+    post:
+      tags:
+      - workflow
+      summary: Cancel Run
+      operationId: cancel_run_api_lifecycle_runs__lifecycle_run_id__cancel_post
+      parameters:
+      - name: lifecycle_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Lifecycle Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/knowledge/resolve-alert:
+    get:
+      tags:
+      - knowledge
+      summary: Resolve Alert
+      description: 查询 Metric → Alert 映射。
+      operationId: resolve_alert_api_knowledge_resolve_alert_get
+      parameters:
+      - name: metric_code
+        in: query
+        required: true
+        schema:
+          type: string
+          description: 指标代码，如 FEATURE_PSI
+          title: Metric Code
+        description: 指标代码，如 FEATURE_PSI
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/knowledge/entities/{entity_code}:
+    get:
+      tags:
+      - knowledge
+      summary: Get Entity
+      description: 查询单个知识实体。
+      operationId: get_entity_api_knowledge_entities__entity_code__get
+      parameters:
+      - name: entity_code
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Entity Code
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/diagnosis/runs:
+    get:
+      tags:
+      - diagnosis
+      summary: List Runs
+      operationId: list_runs_api_diagnosis_runs_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/diagnosis/events/{event_id}/agent-handoff:
+    get:
+      tags:
+      - diagnosis
+      summary: Get Agent Handoff
+      description: Read-only Agent handoff contract. Delegates to DiagnosisHandoffService.
+      operationId: get_agent_handoff_api_diagnosis_events__event_id__agent_handoff_get
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Event Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/diagnosis/runs/{diagnosis_run_id}:
+    get:
+      tags:
+      - diagnosis
+      summary: Get Run
+      operationId: get_run_api_diagnosis_runs__diagnosis_run_id__get
+      parameters:
+      - name: diagnosis_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Diagnosis Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/diagnosis/runs/by-monitoring/{monitoring_run_id}:
+    get:
+      tags:
+      - diagnosis
+      summary: Get Diagnosis By Monitoring
+      description: 查询某个监控运行对应的最新诊断结果（含候选排序 + 证据详情）。
+      operationId: get_diagnosis_by_monitoring_api_diagnosis_runs_by_monitoring__monitoring_run_id__get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/diagnosis/trigger:
+    post:
+      tags:
+      - diagnosis
+      summary: Trigger Diagnosis
+      description: 手动触发一次诊断（用于场景注入后的根因分析）。
+      operationId: trigger_diagnosis_api_diagnosis_trigger_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriggerDiagnosisRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs:
+    get:
+      tags:
+      - monitoring
+      summary: List Runs
+      description: 列出最近的监控运行。
+      operationId: list_runs_api_monitoring_runs_get
+      parameters:
+      - name: model_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 按模型筛选
+          title: Model Id
+        description: 按模型筛选
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          description: 返回数量上限
+          default: 50
+          title: Limit
+        description: 返回数量上限
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - monitoring
+      summary: Trigger Run
+      description: '触发一次完整监控管道 — 每个 W1/W2/W3 窗口独立运行 _monitor_one。
+
+
+        W0 做基线，W1/W2/W3 各自作为独立监控窗口。
+
+        指标按窗口分别持久化，Dashboard 按窗口分组展示。'
+      operationId: trigger_run_api_monitoring_runs_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunMonitoringRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/{monitoring_run_id}:
+    get:
+      tags:
+      - monitoring
+      summary: Get Run
+      description: 查看一次监控运行的详情。
+      operationId: get_run_api_monitoring_runs__monitoring_run_id__get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/{monitoring_run_id}/metrics:
+    get:
+      tags:
+      - monitoring
+      summary: Get Metrics
+      description: 查看一次监控运行的全部指标。支持 ?category=drift 按分类过滤。
+      operationId: get_metrics_api_monitoring_runs__monitoring_run_id__metrics_get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      - name: category
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: '按 category 过滤: core|distribution|drift|quality|aggregate|meta'
+          title: Category
+        description: '按 category 过滤: core|distribution|drift|quality|aggregate|meta'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/{monitoring_run_id}/alerts:
+    get:
+      tags:
+      - monitoring
+      summary: Get Alerts
+      description: 查看一次监控运行的全部告警。
+      operationId: get_alerts_api_monitoring_runs__monitoring_run_id__alerts_get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/detailed:
+    post:
+      tags:
+      - monitoring
+      summary: Trigger Detailed Run
+      description: '触发一次完整模式监控运行（V2）。
+
+
+        使用交接包全套算法：PSI/JS/KS/Wasserstein + BH 校正 + 4 个检测器 + 趋势斜率。
+
+        需要提供分箱规则和特征列表才能启用漂移检测。'
+      operationId: trigger_detailed_run_api_monitoring_runs_detailed_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunDetailedMonitoringRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/parallel-cycle:
+    post:
+      tags:
+      - monitoring
+      summary: Trigger Parallel Cycle
+      description: '触发多模型并行监控周期（V2）。
+
+
+        使用 asyncio 并发执行，最多 max_concurrency 个模型同时监控。'
+      operationId: trigger_parallel_cycle_api_monitoring_parallel_cycle_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunParallelCycleRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/data-eligibility:
+    post:
+      tags:
+      - iteration
+      summary: Evaluate Data Eligibility
+      operationId: evaluate_data_eligibility_api_iteration_data_eligibility_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DataEligibilityInput'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/decisions:
+    post:
+      tags:
+      - iteration
+      summary: Create Decision
+      operationId: create_decision_api_iteration_decisions_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionInput'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - iteration
+      summary: List Decisions
+      operationId: list_decisions_api_iteration_decisions_get
+      parameters:
+      - name: model_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/decisions/{proposal_id}:
+    get:
+      tags:
+      - iteration
+      summary: Get Decision
+      operationId: get_decision_api_iteration_decisions__proposal_id__get
+      parameters:
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Proposal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/proposals/{proposal_id}:
+    get:
+      tags:
+      - iteration
+      summary: Get Proposal Contract
+      operationId: get_proposal_contract_api_iteration_proposals__proposal_id__get
+      parameters:
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Proposal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/proposals/{proposal_id}/risk:
+    get:
+      tags:
+      - iteration
+      summary: Get Proposal Risk
+      operationId: get_proposal_risk_api_iteration_proposals__proposal_id__risk_get
+      parameters:
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Proposal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/plans/{training_plan_id}:
+    get:
+      tags:
+      - iteration
+      summary: Get Training Plan
+      operationId: get_training_plan_api_iteration_plans__training_plan_id__get
+      parameters:
+      - name: training_plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Training Plan Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/runs/{iteration_run_id}:
+    get:
+      tags:
+      - iteration
+      summary: Get Iteration Run
+      operationId: get_iteration_run_api_iteration_runs__iteration_run_id__get
+      parameters:
+      - name: iteration_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Iteration Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/runs/{iteration_run_id}/rounds:
+    get:
+      tags:
+      - iteration
+      summary: Get Iteration Rounds
+      operationId: get_iteration_rounds_api_iteration_runs__iteration_run_id__rounds_get
+      parameters:
+      - name: iteration_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Iteration Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/runs/{iteration_run_id}/failures:
+    get:
+      tags:
+      - iteration
+      summary: Get Iteration Failures
+      operationId: get_iteration_failures_api_iteration_runs__iteration_run_id__failures_get
+      parameters:
+      - name: iteration_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Iteration Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/executions/{plan_id}:
+    get:
+      tags:
+      - iteration
+      summary: Get External Execution
+      operationId: get_external_execution_api_iteration_executions__plan_id__get
+      parameters:
+      - name: plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Plan Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/experiments/{experiment_id}:
+    get:
+      tags:
+      - iteration
+      summary: Get Experiment
+      operationId: get_experiment_api_iteration_experiments__experiment_id__get
+      parameters:
+      - name: experiment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Experiment Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/experiments/{experiment_id}/qualification:
+    get:
+      tags:
+      - iteration
+      summary: Get Experiment Qualification
+      operationId: get_experiment_qualification_api_iteration_experiments__experiment_id__qualification_get
+      parameters:
+      - name: experiment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Experiment Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/config/{model_id}:
+    get:
+      tags:
+      - iteration
+      summary: Get Iteration Config
+      operationId: get_iteration_config_api_iteration_config__model_id__get
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/decisions/{proposal_id}/reviews:
+    post:
+      tags:
+      - iteration
+      summary: Submit Review
+      operationId: submit_review_api_iteration_decisions__proposal_id__reviews_post
+      parameters:
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Proposal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualReviewSubmission'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/decisions/{proposal_id}/training-plans:
+    post:
+      tags:
+      - iteration
+      summary: Create Training Plan
+      operationId: create_training_plan_api_iteration_decisions__proposal_id__training_plans_post
+      parameters:
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Proposal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanBuildRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/decisions/{proposal_id}/qualifications:
+    post:
+      tags:
+      - iteration
+      summary: Evaluate Qualification
+      operationId: evaluate_qualification_api_iteration_decisions__proposal_id__qualifications_post
+      parameters:
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Proposal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QualificationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/iteration/jobs:
+    post:
+      tags:
+      - iteration-internal
+      summary: Create Training Job
+      operationId: create_training_job_api_internal_iteration_jobs_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrainingJobInput'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/iteration/jobs/{training_job_id}/callback:
+    post:
+      tags:
+      - iteration-internal
+      summary: Training Job Callback
+      operationId: training_job_callback_api_internal_iteration_jobs__training_job_id__callback_post
+      parameters:
+      - name: training_job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Training Job Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrainingCallback'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/iteration/executions/{plan_type}/{plan_id}/callback:
+    post:
+      tags:
+      - iteration-internal
+      summary: External Execution Callback
+      description: External calibration/threshold/repair executors report completion.
+      operationId: external_execution_callback_api_internal_iteration_executions__plan_type___plan_id__callback_post
+      parameters:
+      - name: plan_type
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Plan Type
+      - name: plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Plan Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalExecutionCallbackRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/iteration/repair/{repair_plan_id}/complete:
+    post:
+      tags:
+      - iteration-internal
+      summary: Repair Complete
+      description: '外部数据/管道修复完成回调。
+
+
+        修复团队完成修复后调用此端点，通知 lifecycle 继续。'
+      operationId: repair_complete_api_internal_iteration_repair__repair_plan_id__complete_post
+      parameters:
+      - name: repair_plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Repair Plan Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/RepairCompleteRequest'
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/iteration/deployment/{deployment_id}/callback:
+    post:
+      tags:
+      - iteration-internal
+      summary: Deployment Callback
+      description: External deployment system reports a stage result.
+      operationId: deployment_callback_api_internal_iteration_deployment__deployment_id__callback_post
+      parameters:
+      - name: deployment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Deployment Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeploymentCallbackRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    DataEligibilityInput:
+      properties:
+        window_id:
+          type: string
+          title: Window Id
+        data_track:
+          $ref: '#/components/schemas/DataTrack'
+          default: NATURAL
+        data_snapshot_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Data Snapshot Id
+        data_checksum:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Data Checksum
+        label_column:
+          type: string
+          title: Label Column
+          default: is_bad
+        label_missing_rate:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Label Missing Rate
+        label_mature:
+          type: boolean
+          title: Label Mature
+          default: true
+        label_imputation_requested:
+          type: boolean
+          title: Label Imputation Requested
+          default: false
+        feature_missing_stats:
+          items:
+            $ref: '#/components/schemas/FeatureMissingStat'
+          type: array
+          title: Feature Missing Stats
+        requested_for_supervised_training:
+          type: boolean
+          title: Requested For Supervised Training
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - window_id
+      - label_missing_rate
+      title: DataEligibilityInput
+    DataTrack:
+      type: string
+      enum:
+      - NATURAL
+      - SCENARIO
+      title: DataTrack
+    DecisionInput:
+      properties:
+        diagnosis_run_id:
+          type: string
+          title: Diagnosis Run Id
+        lifecycle_run_id:
+          type: string
+          title: Lifecycle Run Id
+        model_id:
+          type: string
+          title: Model Id
+        champion_version:
+          type: string
+          title: Champion Version
+        root_causes:
+          items:
+            $ref: '#/components/schemas/RootCauseCandidate'
+          type: array
+          minItems: 1
+          title: Root Causes
+        degraded_metrics:
+          items:
+            $ref: '#/components/schemas/MetricDegradation'
+          type: array
+          title: Degraded Metrics
+        business_objective_changed:
+          type: boolean
+          title: Business Objective Changed
+          default: false
+        data_repair_completed:
+          type: boolean
+          title: Data Repair Completed
+          default: false
+        pipeline_repair_completed:
+          type: boolean
+          title: Pipeline Repair Completed
+          default: false
+        rule_version:
+          type: string
+          title: Rule Version
+          default: iteration-rules-v1
+      additionalProperties: false
+      type: object
+      required:
+      - diagnosis_run_id
+      - lifecycle_run_id
+      - model_id
+      - champion_version
+      - root_causes
+      title: DecisionInput
+    DeploymentCallbackRequest:
+      properties:
+        lifecycle_run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lifecycle Run Id
+        qualification_run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Qualification Run Id
+        model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Id
+        champion_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Champion Version
+        candidate_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Candidate Version
+        deployment_stage:
+          type: string
+          minLength: 1
+          title: Deployment Stage
+        deployment_decision:
+          type: string
+          minLength: 1
+          title: Deployment Decision
+        status:
+          type: string
+          minLength: 1
+          title: Status
+          default: RUNNING
+        external_task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Task Id
+        health_json:
+          additionalProperties: true
+          type: object
+          title: Health Json
+        result_json:
+          additionalProperties: true
+          type: object
+          title: Result Json
+      type: object
+      required:
+      - deployment_stage
+      - deployment_decision
+      title: DeploymentCallbackRequest
+    DimensionCode:
+      type: string
+      enum:
+      - DATA
+      - FEATURE
+      - MODEL
+      - BUSINESS
+      title: DimensionCode
+    ExternalExecutionCallbackRequest:
+      properties:
+        status:
+          type: string
+          minLength: 1
+          title: Status
+          default: SUCCEEDED
+        artifact_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Artifact Uri
+        metrics:
+          additionalProperties: true
+          type: object
+          title: Metrics
+        external_task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Task Id
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        resume_lifecycle:
+          type: boolean
+          title: Resume Lifecycle
+          default: true
+      type: object
+      title: ExternalExecutionCallbackRequest
+    FeatureMissingStat:
+      properties:
+        feature_code:
+          type: string
+          title: Feature Code
+        missing_rate:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Missing Rate
+        is_critical:
+          type: boolean
+          title: Is Critical
+          default: false
+        band:
+          anyOf:
+          - $ref: '#/components/schemas/MissingRateBand'
+          - type: 'null'
+        training_blocked:
+          type: boolean
+          title: Training Blocked
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - feature_code
+      - missing_rate
+      title: FeatureMissingStat
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    ManualReviewSubmission:
+      properties:
+        proposal_id:
+          type: string
+          title: Proposal Id
+        reviewer_id:
+          type: string
+          title: Reviewer Id
+        decision:
+          $ref: '#/components/schemas/ReviewDecision'
+        reason:
+          type: string
+          minLength: 1
+          title: Reason
+        rejection_reason_codes:
+          items:
+            type: string
+          type: array
+          title: Rejection Reason Codes
+        adjustment_instructions:
+          items:
+            type: string
+          type: array
+          title: Adjustment Instructions
+        forbidden_adjustments:
+          items:
+            type: string
+          type: array
+          title: Forbidden Adjustments
+        expected_evidence:
+          items:
+            type: string
+          type: array
+          title: Expected Evidence
+        reviewed_at:
+          type: string
+          format: date-time
+          title: Reviewed At
+      additionalProperties: false
+      type: object
+      required:
+      - proposal_id
+      - reviewer_id
+      - decision
+      - reason
+      - reviewed_at
+      title: ManualReviewSubmission
+    MetricComparison:
+      properties:
+        metric_code:
+          type: string
+          title: Metric Code
+        direction:
+          type: string
+          title: Direction
+        original_drop:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Original Drop
+        recovered_amount:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Recovered Amount
+        recovery_rate:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Recovery Rate
+        champion_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Champion Value
+        challenger_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Challenger Value
+        healthy_lower_bound:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Healthy Lower Bound
+        healthy_upper_bound:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Healthy Upper Bound
+        bootstrap_ci_lower:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Bootstrap Ci Lower
+        bootstrap_ci_upper:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Bootstrap Ci Upper
+      additionalProperties: false
+      type: object
+      required:
+      - metric_code
+      - direction
+      title: MetricComparison
+    MetricDegradation:
+      properties:
+        metric_code:
+          type: string
+          title: Metric Code
+        baseline_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Baseline Value
+        current_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Current Value
+        healthy_lower_bound:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Healthy Lower Bound
+        healthy_upper_bound:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Healthy Upper Bound
+        degraded:
+          type: boolean
+          title: Degraded
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - metric_code
+      title: MetricDegradation
+    MissingRateBand:
+      type: string
+      enum:
+      - NORMAL
+      - WATCH
+      - WARNING
+      - CRITICAL
+      - UNAVAILABLE
+      title: MissingRateBand
+    PlanBuildRequest:
+      properties:
+        approval_id:
+          type: string
+          title: Approval Id
+        model_algorithm:
+          type: string
+          minLength: 1
+          title: Model Algorithm
+        feature_schema_version:
+          type: string
+          minLength: 1
+          title: Feature Schema Version
+        preprocessing_version:
+          type: string
+          minLength: 1
+          title: Preprocessing Version
+        business_round:
+          type: integer
+          maximum: 3.0
+          minimum: 1.0
+          title: Business Round
+          default: 1
+        data_eligibility_assessment_ids:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Data Eligibility Assessment Ids
+        data_snapshot_ids:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Data Snapshot Ids
+        label_versions:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Label Versions
+      type: object
+      required:
+      - approval_id
+      - model_algorithm
+      - feature_schema_version
+      - preprocessing_version
+      - data_eligibility_assessment_ids
+      - data_snapshot_ids
+      - label_versions
+      title: PlanBuildRequest
+    QualificationRequest:
+      properties:
+        qualification_run_id:
+          type: string
+          title: Qualification Run Id
+        iteration_run_id:
+          type: string
+          title: Iteration Run Id
+        experiment_id:
+          type: string
+          title: Experiment Id
+        candidate_version:
+          type: string
+          title: Candidate Version
+        target_metrics:
+          items:
+            $ref: '#/components/schemas/MetricComparison'
+          type: array
+          title: Target Metrics
+        data_reproducible:
+          type: boolean
+          title: Data Reproducible
+        discrimination_passed:
+          type: boolean
+          title: Discrimination Passed
+        calibration_passed:
+          type: boolean
+          title: Calibration Passed
+        score_psi:
+          type: number
+          title: Score Psi
+        train_valid_gap:
+          type: number
+          title: Train Valid Gap
+        segment_governance_passed:
+          type: boolean
+          title: Segment Governance Passed
+        oot_window_id:
+          type: string
+          title: Oot Window Id
+        candidate_frozen_before_oot:
+          type: boolean
+          title: Candidate Frozen Before Oot
+        oot_usage:
+          type: string
+          title: Oot Usage
+          default: FINAL_QUALIFICATION
+        oot_passed:
+          type: boolean
+          title: Oot Passed
+        data_track:
+          $ref: '#/components/schemas/DataTrack'
+          default: NATURAL
+      additionalProperties: false
+      type: object
+      required:
+      - qualification_run_id
+      - iteration_run_id
+      - experiment_id
+      - candidate_version
+      - data_reproducible
+      - discrimination_passed
+      - calibration_passed
+      - score_psi
+      - train_valid_gap
+      - segment_governance_passed
+      - oot_window_id
+      - candidate_frozen_before_oot
+      - oot_passed
+      title: QualificationRequest
+    RegisterModelRequest:
+      properties:
+        model_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Model Id
+        model_name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Model Name
+        model_type:
+          type: string
+          title: Model Type
+          default: CREDIT_RISK
+      type: object
+      required:
+      - model_id
+      - model_name
+      title: RegisterModelRequest
+      description: POST /api/models 请求体。
+    RegisterVersionRequest:
+      properties:
+        version_code:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Version Code
+        role:
+          type: string
+          title: Role
+          default: CHALLENGER
+      type: object
+      required:
+      - version_code
+      title: RegisterVersionRequest
+      description: POST /api/models/{model_id}/versions 请求体。
+    RepairCompleteRequest:
+      properties:
+        status:
+          type: string
+          minLength: 1
+          title: Status
+          default: SUCCEEDED
+        repair_plan_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repair Plan Id
+        metrics:
+          additionalProperties: true
+          type: object
+          title: Metrics
+        artifact_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Artifact Uri
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+      type: object
+      title: RepairCompleteRequest
+    ResumeRequest:
+      properties:
+        decision:
+          type: string
+          title: Decision
+          default: approved
+        resume_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resume Type
+        manual_review_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Manual Review Id
+        review_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Review Id
+        plan_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Plan Type
+        plan_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Plan Id
+        repair_plan_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repair Plan Id
+        artifact_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Artifact Uri
+        metrics:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Metrics
+        best_threshold:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Best Threshold
+        training_job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Training Job Id
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+        worker_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Worker Status
+        candidate_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Candidate Version
+        experiment_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Experiment Id
+      type: object
+      title: ResumeRequest
+    ReviewDecision:
+      type: string
+      enum:
+      - APPROVE
+      - REJECT
+      title: ReviewDecision
+    RootCauseCandidate:
+      properties:
+        root_cause_code:
+          type: string
+          title: Root Cause Code
+        dimension:
+          $ref: '#/components/schemas/DimensionCode'
+        score:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Score
+        evidence_coverage:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Evidence Coverage
+        evidence_types:
+          items:
+            type: string
+          type: array
+          title: Evidence Types
+      additionalProperties: false
+      type: object
+      required:
+      - root_cause_code
+      - dimension
+      - score
+      - evidence_coverage
+      title: RootCauseCandidate
+    RunDetailedMonitoringRequest:
+      properties:
+        model_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Model Id
+        champion_version:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Champion Version
+        baseline_window_id:
+          type: string
+          title: Baseline Window Id
+          default: ''
+        current_window_id:
+          type: string
+          title: Current Window Id
+          default: ''
+        data_track:
+          type: string
+          title: Data Track
+          default: NATURAL
+        binning_rules:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Binning Rules
+        feature_names:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Feature Names
+        min_samples:
+          type: integer
+          title: Min Samples
+          default: 2000
+        min_bad:
+          type: integer
+          title: Min Bad
+          default: 50
+      type: object
+      required:
+      - model_id
+      - champion_version
+      title: RunDetailedMonitoringRequest
+      description: V2 完整模式监控请求（含分箱规则和特征列表）。
+    RunMonitoringRequest:
+      properties:
+        model_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Model Id
+        champion_version:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Champion Version
+        baseline_window_id:
+          type: string
+          title: Baseline Window Id
+          default: ''
+        current_window_id:
+          type: string
+          title: Current Window Id
+          default: ''
+        data_track:
+          type: string
+          title: Data Track
+          default: NATURAL
+      type: object
+      required:
+      - model_id
+      - champion_version
+      title: RunMonitoringRequest
+    RunParallelCycleRequest:
+      properties:
+        model_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 50
+          minItems: 1
+          title: Model Ids
+        champion_versions:
+          additionalProperties:
+            type: string
+          type: object
+          title: Champion Versions
+        max_concurrency:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Max Concurrency
+          default: 30
+      type: object
+      required:
+      - model_ids
+      title: RunParallelCycleRequest
+      description: 多模型并行监控周期请求。
+    StartRunRequest:
+      properties:
+        model_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Model Id
+        champion_version:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Champion Version
+        trigger_type:
+          type: string
+          title: Trigger Type
+          default: SCHEDULED_TRIGGER
+      type: object
+      required:
+      - model_id
+      - champion_version
+      title: StartRunRequest
+    TimeRange:
+      properties:
+        start_at:
+          type: string
+          format: date-time
+          title: Start At
+        end_at:
+          type: string
+          format: date-time
+          title: End At
+      additionalProperties: false
+      type: object
+      required:
+      - start_at
+      - end_at
+      title: TimeRange
+    TrainingCallback:
+      properties:
+        training_job_id:
+          type: string
+          title: Training Job Id
+        lifecycle_run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lifecycle Run Id
+        idempotency_key:
+          type: string
+          title: Idempotency Key
+        experiment_id:
+          type: string
+          title: Experiment Id
+        status:
+          $ref: '#/components/schemas/WorkerStatus'
+        candidate_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Candidate Version
+        model_artifact_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Artifact Uri
+        calibrator_artifact_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Calibrator Artifact Uri
+        threshold_artifact_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Threshold Artifact Uri
+        training_metrics:
+          additionalProperties: true
+          type: object
+          title: Training Metrics
+        validation_metrics:
+          additionalProperties: true
+          type: object
+          title: Validation Metrics
+        segment_metrics:
+          additionalProperties: true
+          type: object
+          title: Segment Metrics
+        artifact_checksums:
+          additionalProperties:
+            type: string
+          type: object
+          title: Artifact Checksums
+        environment_manifest:
+          additionalProperties: true
+          type: object
+          title: Environment Manifest
+        technical_retry_count:
+          type: integer
+          title: Technical Retry Count
+          default: 0
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+      additionalProperties: false
+      type: object
+      required:
+      - training_job_id
+      - idempotency_key
+      - experiment_id
+      - status
+      title: TrainingCallback
+      description: 幂等键是 training_job_id；仅表达 Worker 技术结果。
+    TrainingJobInput:
+      properties:
+        training_job_id:
+          type: string
+          title: Training Job Id
+        idempotency_key:
+          type: string
+          title: Idempotency Key
+        iteration_run_id:
+          type: string
+          title: Iteration Run Id
+        training_plan_id:
+          type: string
+          title: Training Plan Id
+        experiment_id:
+          type: string
+          title: Experiment Id
+        business_round:
+          type: integer
+          maximum: 3.0
+          minimum: 1.0
+          title: Business Round
+        strategy_code:
+          type: string
+          title: Strategy Code
+        training_window_ids:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Training Window Ids
+        validation_window_ids:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Validation Window Ids
+        train_time_ranges:
+          items:
+            $ref: '#/components/schemas/TimeRange'
+          type: array
+          title: Train Time Ranges
+        validation_time_ranges:
+          items:
+            $ref: '#/components/schemas/TimeRange'
+          type: array
+          title: Validation Time Ranges
+        oot_window_id:
+          type: string
+          title: Oot Window Id
+          default: W4
+        data_snapshot_ids:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Data Snapshot Ids
+        label_versions:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Label Versions
+        sample_weight_policy:
+          additionalProperties: true
+          type: object
+          title: Sample Weight Policy
+        feature_schema_version:
+          type: string
+          title: Feature Schema Version
+        preprocessing_version:
+          type: string
+          title: Preprocessing Version
+        algorithm:
+          type: string
+          title: Algorithm
+        hyperparameters:
+          additionalProperties: true
+          type: object
+          title: Hyperparameters
+        target_metrics:
+          items:
+            type: string
+          type: array
+          title: Target Metrics
+        qualification_rule_version:
+          type: string
+          title: Qualification Rule Version
+        base_model_version:
+          type: string
+          title: Base Model Version
+        seed:
+          type: integer
+          title: Seed
+        artifact_output_uri:
+          type: string
+          title: Artifact Output Uri
+      additionalProperties: false
+      type: object
+      required:
+      - training_job_id
+      - idempotency_key
+      - iteration_run_id
+      - training_plan_id
+      - experiment_id
+      - business_round
+      - strategy_code
+      - training_window_ids
+      - validation_window_ids
+      - data_snapshot_ids
+      - label_versions
+      - feature_schema_version
+      - preprocessing_version
+      - algorithm
+      - qualification_rule_version
+      - base_model_version
+      - seed
+      - artifact_output_uri
+      title: TrainingJobInput
+      description: 训练参数；技术重试必须复用 training_job_id 和 idempotency_key。
+    TriggerDiagnosisRequest:
+      properties:
+        monitoring_run_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Monitoring Run Id
+        lifecycle_run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lifecycle Run Id
+      type: object
+      required:
+      - monitoring_run_id
+      title: TriggerDiagnosisRequest
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    WorkerStatus:
+      type: string
+      enum:
+      - PENDING
+      - RUNNING
+      - SUCCEEDED
+      - RETRYING
+      - FAILED
+      - CANCELLED
+      - DEAD_LETTER
+      - LOST
+      title: WorkerStatus

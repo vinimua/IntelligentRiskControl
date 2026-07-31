@@ -1,0 +1,83 @@
+{
+  "model_id": "credit_model_004",
+  "input_records": [
+    {
+      "social_score": 530.84,
+      "telecom_score": 66.81,
+      "ecomm_risk_score": 56.11,
+      "judicial_risk_score": 0.0,
+      "device_risk_score": 0.358,
+      "blacklist_hit": 0,
+      "gps_anomaly": 0,
+      "emulator_flag": 0,
+      "login_fail_count": 0,
+      "ip_change_freq": 4,
+      "overdue_history": 1,
+      "debt_income_ratio": 0.7449
+    },
+    {
+      "social_score": 415.94,
+      "telecom_score": 27.06,
+      "ecomm_risk_score": 100.0,
+      "judicial_risk_score": 10.44,
+      "device_risk_score": 0.1383,
+      "blacklist_hit": 0,
+      "gps_anomaly": 0,
+      "emulator_flag": 0,
+      "login_fail_count": 1,
+      "ip_change_freq": 4,
+      "overdue_history": 0,
+      "debt_income_ratio": 0.3602
+    },
+    {
+      "social_score": 718.61,
+      "telecom_score": 65.23,
+      "ecomm_risk_score": 75.99,
+      "judicial_risk_score": 30.87,
+      "device_risk_score": 0.2506,
+      "blacklist_hit": 0,
+      "gps_anomaly": 0,
+      "emulator_flag": 0,
+      "login_fail_count": 1,
+      "ip_change_freq": 2,
+      "overdue_history": 3,
+      "debt_income_ratio": 0.1208
+    },
+    {
+      "social_score": 638.55,
+      "telecom_score": 68.79,
+      "ecomm_risk_score": 39.49,
+      "judicial_risk_score": 40.74,
+      "device_risk_score": 0.1933,
+      "blacklist_hit": 0,
+      "gps_anomaly": 0,
+      "emulator_flag": 0,
+      "login_fail_count": 0,
+      "ip_change_freq": 3,
+      "overdue_history": 0,
+      "debt_income_ratio": 0.0697
+    },
+    {
+      "social_score": 510.54,
+      "telecom_score": 61.43,
+      "ecomm_risk_score": 59.45,
+      "judicial_risk_score": 21.24,
+      "device_risk_score": 0.2915,
+      "blacklist_hit": 0,
+      "gps_anomaly": 0,
+      "emulator_flag": 0,
+      "login_fail_count": 1,
+      "ip_change_freq": 0,
+      "overdue_history": 4,
+      "debt_income_ratio": 0.0715
+    }
+  ],
+  "expected_calibrated_pd": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.02564102564102564
+  ],
+  "absolute_tolerance": 1e-12
+}

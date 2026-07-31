@@ -1,0 +1,605 @@
+{
+  "baseline_id": "credit_model_001_baseline",
+  "model_id": "credit_model_001",
+  "model_version": "champion_v1",
+  "baseline_version": "baseline_v1",
+  "baseline_status": "ACTIVE",
+  "source_mode": "W0_FIXED",
+  "reference_window_ids": [
+    "W0"
+  ],
+  "reference_dataset_uri": "data/windows/W0/data.parquet",
+  "feature_schema_version": "41e03ee748ace99a",
+  "feature_profile_uri": "artifacts/baselines/credit_model_001/champion_v1/baseline_v1/feature_profile.parquet",
+  "score_profile_uri": "artifacts/baselines/credit_model_001/champion_v1/baseline_v1/score_profile.parquet",
+  "performance_reference_json": {
+    "auc": 0.9824086680281371,
+    "ks": 0.8955411844792376,
+    "pr_auc": 0.8565785229935158,
+    "brier": 0.010646231008761125,
+    "ece": 0.004523084545055482,
+    "bad_recall": 0.9833333333333333,
+    "bad_rate": 0.03924133420536298
+  },
+  "binning_rules_json": {
+    "credit_query_times": {
+      "feature_type": "continuous",
+      "edges": [
+        -1.0001e-05,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        10.000010001
+      ],
+      "categories": []
+    },
+    "multi_loan_count": {
+      "feature_type": "continuous",
+      "edges": [
+        -9.001e-06,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        9.000009001
+      ],
+      "categories": []
+    },
+    "overdue_history": {
+      "feature_type": "continuous",
+      "edges": [
+        -7.0009999999999995e-06,
+        1.0,
+        2.0,
+        3.0,
+        7.000007001
+      ],
+      "categories": []
+    },
+    "credit_utilization": {
+      "feature_type": "continuous",
+      "edges": [
+        0.056098999,
+        0.23832000000000003,
+        0.33046000000000003,
+        0.39146000000000003,
+        0.44436000000000003,
+        0.5037,
+        0.55954,
+        0.6153,
+        0.6754400000000002,
+        0.751,
+        0.964301001
+      ],
+      "categories": []
+    },
+    "credit_length_months": {
+      "feature_type": "continuous",
+      "edges": [
+        0.999909999,
+        8.0,
+        14.0,
+        19.0,
+        24.0,
+        26.0,
+        32.0,
+        38.0,
+        47.0,
+        91.000090001
+      ],
+      "categories": []
+    },
+    "max_overdue_days": {
+      "feature_type": "continuous",
+      "edges": [
+        -4.4001e-05,
+        1.0,
+        2.0,
+        3.0,
+        5.0,
+        7.0,
+        44.000044001
+      ],
+      "categories": []
+    },
+    "social_score": {
+      "feature_type": "continuous",
+      "edges": [
+        299.999399999,
+        461.476,
+        505.43199999999996,
+        538.438,
+        571.41,
+        602.92,
+        628.126,
+        658.408,
+        689.932,
+        736.882,
+        900.000600001
+      ],
+      "categories": []
+    },
+    "telecom_score": {
+      "feature_type": "continuous",
+      "edges": [
+        -0.000100001,
+        35.616,
+        45.756,
+        52.903999999999996,
+        58.782000000000004,
+        63.88,
+        70.09800000000001,
+        76.38,
+        83.574,
+        93.694,
+        100.000100001
+      ],
+      "categories": []
+    },
+    "ecomm_risk_score": {
+      "feature_type": "continuous",
+      "edges": [
+        -0.000100001,
+        15.45,
+        27.754,
+        36.402,
+        44.074000000000005,
+        50.77,
+        57.432000000000016,
+        65.84799999999998,
+        74.24000000000001,
+        87.542,
+        100.000100001
+      ],
+      "categories": []
+    },
+    "judicial_risk_score": {
+      "feature_type": "continuous",
+      "edges": [
+        -0.000100001,
+        5.300000000000005,
+        11.174000000000001,
+        15.99,
+        21.04800000000002,
+        26.535999999999998,
+        32.102000000000004,
+        40.908,
+        100.000100001
+      ],
+      "categories": []
+    },
+    "blacklist_hit": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "0",
+        "1"
+      ]
+    },
+    "app_duration": {
+      "feature_type": "continuous",
+      "edges": [
+        0.999740359,
+        9.456000000000001,
+        31.476000000000003,
+        48.394,
+        64.87,
+        80.93,
+        95.70800000000001,
+        111.698,
+        130.32200000000003,
+        156.93200000000002,
+        260.640259641
+      ],
+      "categories": []
+    },
+    "click_frequency": {
+      "feature_type": "continuous",
+      "edges": [
+        -3.9501e-05,
+        3.0760000000000014,
+        5.45,
+        7.79,
+        9.9,
+        12.034000000000004,
+        13.985999999999999,
+        16.294000000000004,
+        19.46,
+        39.500039500999996
+      ],
+      "categories": []
+    },
+    "page_depth": {
+      "feature_type": "continuous",
+      "edges": [
+        0.999986999,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        14.000013001
+      ],
+      "categories": []
+    },
+    "session_count": {
+      "feature_type": "continuous",
+      "edges": [
+        0.999982999,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        8.0,
+        9.0,
+        11.0,
+        18.000017001
+      ],
+      "categories": []
+    },
+    "night_activity_ratio": {
+      "feature_type": "continuous",
+      "edges": [
+        0.024398999,
+        0.16460000000000002,
+        0.2239,
+        0.27340000000000003,
+        0.3155,
+        0.3591,
+        0.41118000000000005,
+        0.46226,
+        0.51824,
+        0.5920000000000001,
+        0.856001001
+      ],
+      "categories": []
+    },
+    "login_fail_count": {
+      "feature_type": "continuous",
+      "edges": [
+        -8.001e-06,
+        1.0,
+        2.0,
+        3.0,
+        8.000008001
+      ],
+      "categories": []
+    },
+    "reg_to_apply_days": {
+      "feature_type": "continuous",
+      "edges": [
+        -3.8001e-05,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        6.0,
+        8.0,
+        11.0,
+        38.000038001
+      ],
+      "categories": []
+    },
+    "device_risk_score": {
+      "feature_type": "continuous",
+      "edges": [
+        0.011398999000000002,
+        0.10026,
+        0.13734000000000002,
+        0.1644,
+        0.19542,
+        0.2257,
+        0.25610000000000005,
+        0.2888,
+        0.3341,
+        0.39420000000000005,
+        0.641301001
+      ],
+      "categories": []
+    },
+    "ip_change_freq": {
+      "feature_type": "continuous",
+      "edges": [
+        -7.0009999999999995e-06,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        7.000007001
+      ],
+      "categories": []
+    },
+    "gps_anomaly": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "0",
+        "1"
+      ]
+    },
+    "device_type": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "0",
+        "1",
+        "2"
+      ]
+    },
+    "emulator_flag": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "0",
+        "1"
+      ]
+    },
+    "age": {
+      "feature_type": "continuous",
+      "edges": [
+        17.999952999,
+        21.0,
+        25.0,
+        28.0,
+        32.0,
+        35.0,
+        38.0,
+        42.0,
+        47.0,
+        65.000047001
+      ],
+      "categories": []
+    },
+    "income_level": {
+      "feature_type": "continuous",
+      "edges": [
+        1999.977278969,
+        3069.2400000000002,
+        3930.8840000000005,
+        4857.934000000001,
+        5625.79,
+        6396.442,
+        7283.678,
+        8436.29,
+        10572.132,
+        24721.052721031
+      ],
+      "categories": []
+    },
+    "consumption_level": {
+      "feature_type": "continuous",
+      "edges": [
+        499.981864839,
+        782.122,
+        1169.5940000000003,
+        1593.192,
+        1894.924,
+        2310.71,
+        2777.364,
+        3285.4219999999996,
+        4088.1080000000006,
+        5306.742,
+        18635.178135161
+      ],
+      "categories": []
+    },
+    "education_level": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    },
+    "job_stability": {
+      "feature_type": "continuous",
+      "edges": [
+        0.027698999,
+        0.27076,
+        0.34924,
+        0.3997800000000001,
+        0.44946,
+        0.5005,
+        0.55018,
+        0.60086,
+        0.65954,
+        0.7331,
+        0.937501001
+      ],
+      "categories": []
+    },
+    "marital_status": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "0",
+        "1",
+        "2"
+      ]
+    },
+    "gender": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "0",
+        "1"
+      ]
+    },
+    "city_tier": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "1",
+        "2",
+        "3",
+        "4"
+      ]
+    },
+    "debt_income_ratio": {
+      "feature_type": "continuous",
+      "edges": [
+        0.009998009,
+        0.04016,
+        0.09486000000000001,
+        0.15038000000000007,
+        0.20832000000000003,
+        0.2692,
+        0.3561000000000002,
+        0.48943999999999976,
+        0.65948,
+        0.9328200000000001,
+        2.000001991
+      ],
+      "categories": []
+    },
+    "loan_amount_request": {
+      "feature_type": "continuous",
+      "edges": [
+        999.920506779,
+        1815.544,
+        2786.372,
+        4000.174000000002,
+        5585.618,
+        7107.73,
+        8928.658000000003,
+        11239.023999999996,
+        14184.954,
+        20850.928,
+        80493.299493221
+      ],
+      "categories": []
+    },
+    "repayment_period": {
+      "feature_type": "categorical",
+      "edges": [],
+      "categories": [
+        "3",
+        "6",
+        "12",
+        "24",
+        "36"
+      ]
+    },
+    "apply_hour_sin": {
+      "feature_type": "continuous",
+      "edges": [
+        -1.0000020010000001,
+        -0.9692309097067544,
+        -0.8929789434111369,
+        -0.783143951765599,
+        -0.5906047691493609,
+        -0.36650122672429736,
+        -0.15729608515294885,
+        0.18994840340653463,
+        0.6135949581509335,
+        0.8874120948397248,
+        1.0000020010000001
+      ],
+      "categories": []
+    },
+    "apply_hour_cos": {
+      "feature_type": "continuous",
+      "edges": [
+        -0.9999924817016959,
+        -0.9723699203976767,
+        -0.8870108331782216,
+        -0.7448923552279771,
+        -0.5948227867513417,
+        -0.3987490689252466,
+        -0.17364817766693047,
+        0.13744423268552786,
+        0.5276960598844039,
+        0.8853922766060776,
+        0.9999924817016959
+      ],
+      "categories": []
+    },
+    "apply_weekday_sin": {
+      "feature_type": "continuous",
+      "edges": [
+        -0.974929863037648,
+        -0.7818314824680299,
+        -0.433883739117558,
+        0.0,
+        0.43388373911755823,
+        0.7818314824680298,
+        0.974929863037648
+      ],
+      "categories": []
+    },
+    "apply_weekday_cos": {
+      "feature_type": "continuous",
+      "edges": [
+        -0.900970769871287,
+        -0.900968867902419,
+        -0.2225209339563146,
+        -0.22252093395631434,
+        0.6234898018587334,
+        0.6234898018587336,
+        1.000001901968868
+      ],
+      "categories": []
+    },
+    "apply_is_weekend": {
+      "feature_type": "continuous",
+      "edges": [
+        -1.001e-06,
+        1.000001001
+      ],
+      "categories": []
+    },
+    "apply_is_night": {
+      "feature_type": "continuous",
+      "edges": [
+        -1.001e-06,
+        1.000001001
+      ],
+      "categories": []
+    },
+    "__risk_score__": {
+      "feature_type": "continuous",
+      "edges": [
+        -1.001e-06,
+        0.010723860589812333,
+        1.000001001
+      ],
+      "categories": []
+    }
+  },
+  "metric_thresholds_json": {
+    "rolling": {
+      "min_samples": 2000,
+      "min_bad": 50,
+      "trend_window_count": 5
+    },
+    "metrics": {
+      "ece_bins": 10,
+      "bad_recall_cutoff": 0.2,
+      "epsilon": 1e-06
+    },
+    "data_quality": {
+      "outlier_mad_k": 3.0,
+      "missing_warn": 0.05,
+      "range_warn": 0.01,
+      "unknown_warn": 0.01
+    },
+    "drift": {
+      "psi_warn": 0.1,
+      "psi_alert": 0.25,
+      "js_warn": 0.1,
+      "ks_q_warn": 0.05
+    }
+  },
+  "created_at": "2026-07-18T10:09:18.483265Z",
+  "approved_by": "integration_team",
+  "production_ready": false
+}

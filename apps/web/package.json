@@ -1,0 +1,27 @@
+{
+  "name": "riskitem-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start --port 3000",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "^14.2",
+    "react": "^18.3",
+    "react-dom": "^18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18.3",
+    "@types/react-dom": "^18.3",
+    "autoprefixer": "^10",
+    "eslint": "^8",
+    "eslint-config-next": "^14.2",
+    "postcss": "^8",
+    "tailwindcss": "^3.4",
+    "typescript": "^5"
+  }
+}

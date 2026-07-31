@@ -1,0 +1,26 @@
+{
+  "requested_bin_count": 10,
+  "effective_bin_count": 3,
+  "edges": [
+    null,
+    0.004784688995215311,
+    0.026737967914438502,
+    null
+  ],
+  "counts": [
+    29952,
+    3820,
+    4839
+  ],
+  "proportions": [
+    0.775737484136645,
+    0.09893553650514102,
+    0.125326979358214
+  ],
+  "epsilon": 1e-06,
+  "baseline_id": "credit_model_037_baseline",
+  "baseline_version": "baseline_v1",
+  "model_id": "credit_model_037",
+  "model_version": "champion_v1",
+  "reference_window": "W1"
+}

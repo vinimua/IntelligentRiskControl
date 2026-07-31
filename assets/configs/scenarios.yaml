@@ -1,0 +1,153 @@
+random_seed: 2026
+base_window_ids: [W1, W2, W3]
+intensities: [0.2, 0.4, 0.6]
+label_rule_version: SCENARIO_ACCEPTANCE_V2
+acceptance:
+  psi_normal_max: 0.05
+  psi_warning_min: 0.10
+  psi_alert_min: 0.25
+  psi_stress_max: 0.50
+  missing_delta_alert: 0.15
+  default_value_delta_alert: 0.15
+  range_rate_alert: 0.05
+  unknown_rate_alert: 0.05
+  bad_rate_delta_alert: 0.03
+  segment_share_delta_alert: 0.10
+  ks_effect_alert: 0.20
+  auc_drop_alert: 0.02
+  ks_drop_alert: 0.03
+  pr_auc_drop_alert: 0.03
+  bad_recall_drop_alert: 0.03
+  brier_increase_alert: 0.01
+  ece_increase_alert: 0.01
+scenarios:
+  - scenario_id: SCN_MISSING
+    scenario_name: missing_rate_anomaly
+    root_cause_code: DATA_MISSING
+    cause_dimension: data_quality
+    anomaly_scope: DATA_QUALITY
+    affected_features: [income_level, device_risk_score]
+    scenario_category: OPERATIONAL_ANOMALY
+    drift_type: DATA_QUALITY_FAILURE
+    business_driver: FEATURE_PIPELINE
+    generation_method: CONTROLLED_MISSINGNESS
+  - scenario_id: SCN_SCALE
+    scenario_name: numeric_scaling_anomaly
+    root_cause_code: SCALE_SHIFT
+    cause_dimension: preprocessing
+    anomaly_scope: DISTRIBUTION
+    affected_features: [income_level, loan_amount_request]
+    scenario_category: OPERATIONAL_ANOMALY
+    drift_type: PREPROCESSING_FAILURE
+    business_driver: FEATURE_PIPELINE
+    generation_method: UNIT_SCALE_ERROR
+  - scenario_id: SCN_COVARIATE
+    scenario_name: covariate_drift
+    root_cause_code: COVARIATE_DRIFT
+    cause_dimension: distribution
+    anomaly_scope: DISTRIBUTION
+    affected_features: [device_risk_score, debt_income_ratio]
+    scenario_category: BUSINESS_DRIFT
+    drift_type: COVARIATE
+    business_driver: MARKET_ENVIRONMENT
+    generation_method: VALID_VALUE_LOCATION_SHIFT
+  - scenario_id: SCN_STALE
+    scenario_name: feature_staleness
+    root_cause_code: FEATURE_STALE
+    cause_dimension: data_freshness
+    anomaly_scope: DISTRIBUTION
+    affected_features: [telecom_score]
+    scenario_category: OPERATIONAL_ANOMALY
+    drift_type: DATA_FRESHNESS_FAILURE
+    business_driver: FEATURE_SERVICE
+    generation_method: TEMPORAL_LAG
+  - scenario_id: SCN_SEGMENT
+    scenario_name: customer_mix_shift
+    root_cause_code: SEGMENT_MIX
+    cause_dimension: population
+    anomaly_scope: DISTRIBUTION
+    affected_features: [city_tier, age]
+    scenario_category: BUSINESS_DRIFT
+    drift_type: POPULATION_MIX
+    business_driver: CUSTOMER_MIGRATION
+    generation_method: REAL_ROW_REWEIGHTING
+  - scenario_id: SCN_BADRATE
+    scenario_name: bad_rate_shift
+    root_cause_code: PRIOR_PROBABILITY_SHIFT
+    cause_dimension: business
+    anomaly_scope: MODEL_PERFORMANCE
+    affected_features: [is_bad]
+    scenario_category: BUSINESS_DRIFT
+    drift_type: PRIOR_PROBABILITY
+    business_driver: MACRO_RISK
+    generation_method: CONTROLLED_OUTCOME_RATE_SHIFT
+  - scenario_id: SCN_POLICY
+    scenario_name: policy_selection_shift
+    root_cause_code: POLICY_SELECTION_SHIFT
+    cause_dimension: business
+    anomaly_scope: DISTRIBUTION
+    affected_features: [city_tier, age, debt_income_ratio]
+    scenario_category: BUSINESS_DRIFT
+    drift_type: SELECTION
+    business_driver: CREDIT_POLICY
+    generation_method: REAL_ROW_SEGMENT_REWEIGHTING
+  - scenario_id: SCN_CONCEPT
+    scenario_name: concept_drift
+    root_cause_code: CONCEPT_DRIFT
+    cause_dimension: label_relation
+    anomaly_scope: MODEL_PERFORMANCE
+    affected_features: [is_bad]
+    scenario_category: BUSINESS_DRIFT
+    drift_type: CONCEPT
+    business_driver: RISK_MECHANISM_CHANGE
+    generation_method: LABEL_RELATION_PERMUTATION
+  - scenario_id: SCN_FRAUD
+    scenario_name: fraud_pattern_shift
+    root_cause_code: FRAUD_PATTERN_SHIFT
+    cause_dimension: label_relation
+    anomaly_scope: MODEL_PERFORMANCE
+    affected_features: [login_fail_count, max_overdue_days, is_bad]
+    scenario_category: BUSINESS_DRIFT
+    drift_type: ADVERSARIAL_CONCEPT
+    business_driver: FRAUD_ADAPTATION
+    generation_method: STEALTH_SEGMENT_OUTCOME_SHIFT
+  - scenario_id: SCN_PREPROCESS
+    scenario_name: preprocessing_version_mismatch
+    root_cause_code: PREPROCESS_MISMATCH
+    cause_dimension: preprocessing
+    anomaly_scope: MULTI
+    affected_features: [login_fail_count, reg_to_apply_days]
+    scenario_category: OPERATIONAL_ANOMALY
+    drift_type: PREPROCESSING_FAILURE
+    business_driver: FEATURE_PIPELINE
+    generation_method: DOUBLE_STANDARDIZATION
+  - scenario_id: SCN_KEYFAIL
+    scenario_name: key_feature_failure
+    root_cause_code: FEATURE_FAILURE
+    cause_dimension: availability
+    anomaly_scope: DATA_QUALITY
+    affected_features: [debt_income_ratio]
+    scenario_category: OPERATIONAL_ANOMALY
+    drift_type: DEFAULT_VALUE_COLLAPSE
+    business_driver: FEATURE_SERVICE
+    generation_method: ZERO_DEFAULT_COLLAPSE
+  - scenario_id: SCN_MULTI
+    scenario_name: multi_root_cause
+    root_cause_code: DATA_MISSING+SCALE_SHIFT
+    cause_dimension: multi
+    anomaly_scope: MULTI
+    affected_features: [income_level, device_risk_score]
+    scenario_category: COMPOUND
+    drift_type: MULTI_DOMAIN
+    business_driver: MIXED
+    generation_method: MISSINGNESS_PLUS_SCALE
+  - scenario_id: CLEAN_CONTROL
+    scenario_name: clean_control
+    root_cause_code: NONE
+    cause_dimension: control
+    anomaly_scope: NONE
+    affected_features: []
+    scenario_category: CONTROL
+    drift_type: NONE
+    business_driver: NONE
+    generation_method: UNMODIFIED_COPY

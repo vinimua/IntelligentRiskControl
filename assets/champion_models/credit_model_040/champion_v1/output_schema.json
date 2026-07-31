@@ -1,0 +1,11 @@
+{
+  "schema_version": "champion_output_schema/1.0",
+  "primary_score_field": "calibrated_pd",
+  "score_shape": "one-dimensional",
+  "score_range": [
+    0.0,
+    1.0
+  ],
+  "label_rule": "calibrated_pd >= prediction_threshold",
+  "id_card_in_default_output": false
+}
