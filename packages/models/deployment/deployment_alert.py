@@ -1,13 +1,15 @@
-﻿"""
-部署告警字段
+"""Deployment alert contracts.
+
+DeploymentAlert is the structured input for deployment KG lookup:
+DeploymentAlert -> DeploymentRisk -> DeploymentStrategy.
 """
 
 from ..common.base import ContractModel
-
 from ..common.enums import Severity
 
+
 class DeploymentAlert(ContractModel):
-    """部署阶段异常 — DeploymentAlert 查询入口"""
+    """A deployment-stage abnormal signal produced from health metrics."""
 
     alert_code: str
     metric_code: str
@@ -16,4 +18,9 @@ class DeploymentAlert(ContractModel):
     value: float | None = None
     threshold: float | None = None
     severity: Severity = Severity.WARNING
-    stage: str  # offline_validation / oot / shadow / canary_5 / canary_20 / canary_50 / production
+    stage: str
+
+    lifecycle_run_id: str | None = None
+    deployment_id: str | None = None
+    direction: str | None = None
+    evidence_detail: dict | None = None

@@ -11,6 +11,7 @@ from apps.modelops_api.services.workflow.graph import (
     agent_decision_node,
     build_graph,
     calibration_plan_node,
+    _deployment_action,
     deployment_node,
     diagnosis_handoff_node,
     diagnosis_node,
@@ -24,12 +25,14 @@ from apps.modelops_api.services.workflow.graph import (
     observation_close_node,
     repair_plan_node,
     route_after_failure_analysis,
+    route_after_feature_reconstruction,
     route_after_diagnosis,
     route_after_iteration_decision,
     route_after_manual_review,
     route_after_monitoring,
     threshold_plan_node,
     training_callback_resume_node,
+    wait_feature_reconstruction_node,
 )
 from packages.models.common.enums import LifecyclePhase, Severity
 from packages.models.workflow.lifecycle_state import ModelLifecycleState
@@ -48,6 +51,21 @@ def _base_state(**overrides) -> dict:
     return s
 
 
+def _passing_deployment_metrics() -> dict:
+    return {
+        "challenger_auc": 0.78,
+        "challenger_ks": 0.32,
+        "score_psi": 0.08,
+        "bad_rate_drift": 0.01,
+        "recovery_rate": 0.75,
+        "train_valid_gap": 0.02,
+        "discrimination_passed": True,
+        "calibration_passed": True,
+        "oot_passed": True,
+        "segment_governance_passed": True,
+    }
+
+
 # ── 图结构测试 ──
 
 class TestGraphStructure:
@@ -62,7 +80,8 @@ class TestGraphStructure:
             # P1
             "ObservationCloseNode", "RepairPlanNode", "EventPendingRepairNode",
             "CalibrationPlanNode", "ThresholdPlanNode",
-            "DataEligibilityNode", "ManualReviewNode", "TrainingPlanNode",
+            "DataEligibilityNode", "ManualReviewNode", "FeatureReconstructionNode",
+            "WaitFeatureReconstructionNode", "TrainingPlanNode",
             # P2
             "TrainingJobDispatchNode", "WaitTrainingCallbackNode",
             "TrainingCallbackResumeNode",
@@ -624,9 +643,27 @@ class TestDeploymentGateNode:
         assert result["current_phase"] == LifecyclePhase.MANUAL_REVIEW.value
 
     async def test_qualified_promotes(self):
+        """CANARY_50 + health passed → ADVANCE_STAGE (two-pass: next iteration PRODUCTION → PROMOTE)."""
         result = await deployment_gate_node(
-            _base_state(challenger_qualified=True, deployment_stage="CANARY_50")
+            _base_state(
+                challenger_qualified=True,
+                deployment_stage="CANARY_50",
+                validation_metrics=_passing_deployment_metrics(),
+            )
         )
+        assert result["deployment_decision"] == "ADVANCE_STAGE"
+        assert result["current_phase"] == LifecyclePhase.CANARY_RUNNING.value
+
+    async def test_production_qualified_promotes(self):
+        """PRODUCTION + health passed → PROMOTE."""
+        result = await deployment_gate_node(
+            _base_state(
+                challenger_qualified=True,
+                deployment_stage="PRODUCTION",
+                validation_metrics=_passing_deployment_metrics(),
+            )
+        )
+        assert result["deployment_decision"] == "PROMOTE"
         assert result["current_phase"] == LifecyclePhase.PROMOTED.value
 
     async def test_qualified_advances_intermediate_stage(self):
@@ -643,12 +680,14 @@ class TestDeploymentGateNode:
                 challenger_qualified=True,
                 deployment_stage="CANARY_50",
                 deployment_force_rollback=True,
+                validation_metrics=_passing_deployment_metrics(),
             )
         )
         assert result["deployment_decision"] == "ROLLBACK"
         assert result["current_phase"] == LifecyclePhase.ROLLED_BACK.value
 
-    async def test_failed_health_check_holds_canary(self):
+    async def test_failed_health_check_rolls_back_critical_stage(self):
+        """CANARY_20 (critical) + health failed → ROLLBACK (Gatekeeper rule 3)."""
         result = await deployment_gate_node(
             _base_state(
                 challenger_qualified=True,
@@ -656,7 +695,54 @@ class TestDeploymentGateNode:
                 deployment_health_passed=False,
             )
         )
+        assert result["deployment_decision"] == "ROLLBACK"
+        assert result["current_phase"] == LifecyclePhase.ROLLED_BACK.value
+
+    async def test_failed_health_check_holds_non_critical_stage(self):
+        """SHADOW (non-critical) + health failed → HOLD (Gatekeeper rule 4)."""
+        result = await deployment_gate_node(
+            _base_state(
+                challenger_qualified=True,
+                deployment_stage="SHADOW",
+                deployment_health_passed=False,
+            )
+        )
         assert result["deployment_decision"] == "HOLD"
+        assert result["current_phase"] == LifecyclePhase.CANARY_RUNNING.value
+
+    async def test_severe_health_failure_rolls_back_canary(self):
+        metrics = _passing_deployment_metrics()
+        metrics["bad_rate_drift"] = 0.18
+        result = await deployment_gate_node(
+            _base_state(
+                challenger_qualified=True,
+                deployment_stage="CANARY_20",
+                validation_metrics=metrics,
+            )
+        )
+        assert result["deployment_decision"] == "ROLLBACK"
+        assert result["current_phase"] == LifecyclePhase.ROLLED_BACK.value
+
+    async def test_canary_without_health_metrics_rolls_back(self):
+        """CANARY_20 without health metrics → critical stage failure → ROLLBACK."""
+        result = await deployment_gate_node(
+            _base_state(
+                challenger_qualified=True,
+                deployment_stage="CANARY_20",
+            )
+        )
+        assert result["deployment_decision"] == "ROLLBACK"
+
+    async def test_early_stage_without_health_metrics_holds(self):
+        """OFFLINE_VALIDATION without metrics → not critical → HOLD or ADVANCE."""
+        result = await deployment_gate_node(
+            _base_state(
+                challenger_qualified=True,
+                deployment_stage="OFFLINE_VALIDATION",
+            )
+        )
+        # Early stages with no metrics → passed (optimistic)
+        assert result["deployment_decision"] in ("ADVANCE_STAGE", "HOLD")
         assert result["current_phase"] == LifecyclePhase.CANARY_RUNNING.value
 
 
@@ -720,11 +806,11 @@ class TestRouteAfterFailureAnalysis:
 
 
 class TestRouteAfterManualReview:
-    def test_approved_model_iteration_goes_to_training_plan(self):
+    def test_approved_model_iteration_goes_to_feature_recon(self):
         result = route_after_manual_review(
             _base_state(requires_manual_review=False, need_iteration=True)
         )
-        assert result == "TrainingPlanNode"
+        assert result == "FeatureReconstructionNode"
 
     def test_approved_manual_review_without_iteration_closes_observation(self):
         result = route_after_manual_review(
@@ -736,7 +822,7 @@ class TestRouteAfterManualReview:
         )
         assert result == "ObservationCloseNode"
 
-    def test_approved_manual_review_with_iteration_goes_to_training_plan(self):
+    def test_approved_manual_review_with_iteration_goes_to_feature_recon(self):
         result = route_after_manual_review(
             _base_state(
                 requires_manual_review=False,
@@ -744,10 +830,174 @@ class TestRouteAfterManualReview:
                 need_iteration=True,
             )
         )
-        assert result == "TrainingPlanNode"
+        assert result == "FeatureReconstructionNode"
 
     def test_rejected_review_ends(self):
         result = route_after_manual_review(
             _base_state(requires_manual_review=True, need_iteration=True)
         )
         assert result == "__end__"
+
+
+class TestFeatureReconstructionRouting:
+    def test_dispatched_feature_reconstruction_waits_for_callback(self):
+        result = route_after_feature_reconstruction(
+            _base_state(feature_reconstruction_dispatched=True)
+        )
+        assert result == "WaitFeatureReconstructionNode"
+
+    def test_inline_feature_reconstruction_goes_to_training_plan(self):
+        result = route_after_feature_reconstruction(
+            _base_state(feature_reconstruction_dispatched=False)
+        )
+        assert result == "TrainingPlanNode"
+
+    @pytest.mark.asyncio
+    async def test_wait_feature_reconstruction_accepts_success_callback(self, monkeypatch):
+        monkeypatch.setattr(
+            wf,
+            "interrupt",
+            lambda _: {
+                "status": "SUCCEEDED",
+                "feature_reconstruction_plan_id": "plan-001",
+                "feature_schema_version": "v2",
+                "feature_snapshot_id": "snapshot-001",
+                "transform_artifact_uri": "s3://riskitem/features/transforms/plan-001/pipeline.json",
+            },
+        )
+
+        result = await wait_feature_reconstruction_node(
+            _base_state(feature_reconstruction_plan_id="plan-001")
+        )
+
+        assert result["current_phase"] == LifecyclePhase.ITERATING.value
+        assert result["feature_reconstruction_status"] == "SUCCEEDED"
+        assert result["feature_schema_version"] == "v2"
+        assert result["feature_snapshot_id"] == "snapshot-001"
+
+    @pytest.mark.asyncio
+    async def test_wait_feature_reconstruction_rejects_mismatched_plan(self, monkeypatch):
+        monkeypatch.setattr(
+            wf,
+            "interrupt",
+            lambda _: {
+                "status": "SUCCEEDED",
+                "feature_reconstruction_plan_id": "other-plan",
+            },
+        )
+
+        result = await wait_feature_reconstruction_node(
+            _base_state(feature_reconstruction_plan_id="plan-001")
+        )
+
+        assert result["current_phase"] == LifecyclePhase.FAILED.value
+        assert result["last_error"]["reason"] == "feature_reconstruction_plan_id_mismatch"
+
+
+class TestDeploymentAction:
+    @pytest.mark.asyncio
+    async def test_advance_stage_updates_routing_versions(self, monkeypatch):
+        calls = []
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def commit(self):
+                return None
+
+        class FakeSafetyService:
+            def __init__(self, session):
+                self.session = session
+
+            async def update_traffic_ratio(
+                self,
+                model_id,
+                stage,
+                champion_version=None,
+                challenger_version=None,
+            ):
+                calls.append(
+                    {
+                        "model_id": model_id,
+                        "stage": stage,
+                        "champion": champion_version,
+                        "challenger": challenger_version,
+                    }
+                )
+                return 0.05
+
+        monkeypatch.setattr(
+            "apps.modelops_api.database.async_session",
+            lambda: FakeSession(),
+        )
+        monkeypatch.setattr(
+            "apps.modelops_api.services.iteration.deployment_safety_service.DeploymentSafetyService",
+            FakeSafetyService,
+        )
+
+        decision = type("Decision", (), {"decision": "ADVANCE_STAGE"})()
+
+        result = await _deployment_action(
+            _base_state(),
+            decision,
+            "SHADOW",
+            "credit_model_001",
+            "champion_v1",
+            "challenger_v2",
+            "deploy-001",
+        )
+
+        assert result["deployment_decision"] == "ADVANCE_STAGE"
+        assert calls == [
+            {
+                "model_id": "credit_model_001",
+                "stage": "CANARY_5",
+                "champion": "champion_v1",
+                "challenger": "challenger_v2",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_action_failure_is_converted_to_hold(self, monkeypatch):
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FailingSafetyService:
+            def __init__(self, session):
+                self.session = session
+
+            async def update_traffic_ratio(self, *args, **kwargs):
+                raise RuntimeError("routing db unavailable")
+
+        monkeypatch.setattr(
+            "apps.modelops_api.database.async_session",
+            lambda: FakeSession(),
+        )
+        monkeypatch.setattr(
+            "apps.modelops_api.services.iteration.deployment_safety_service.DeploymentSafetyService",
+            FailingSafetyService,
+        )
+
+        decision = type("Decision", (), {"decision": "ADVANCE_STAGE"})()
+
+        result = await _deployment_action(
+            _base_state(),
+            decision,
+            "SHADOW",
+            "credit_model_001",
+            "champion_v1",
+            "challenger_v2",
+            "deploy-001",
+        )
+
+        assert result["deployment_decision"] == "ADVANCE_STAGE"
+        assert result["action_failed"] is True
+        assert "routing db unavailable" in result["action_error"]

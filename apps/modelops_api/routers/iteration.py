@@ -410,6 +410,125 @@ async def create_training_plan(
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# T3-GAP-01: 特征重构 API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class FeatureReconstructionTriggerRequest(BaseModel):
+    model_id: str = Field(min_length=1, max_length=100)
+    lifecycle_run_id: str | None = None
+    diagnosis_run_id: str | None = None
+    current_schema_version: str = "v1"
+    drift_features: list[dict] = Field(default_factory=list)
+    high_missing_features: list[dict] = Field(default_factory=list)
+    current_feature_names: list[str] = Field(default_factory=list)
+    feature_importance: dict[str, float] = Field(default_factory=dict)
+    skewness: dict[str, float] = Field(default_factory=dict)
+
+
+@router.post("/features/reconstruction-plans")
+async def create_feature_reconstruction_plan(
+    request: Request,
+    body: FeatureReconstructionTriggerRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """T3-GAP-01: 创建特征重构计划。
+
+    根据诊断证据（PSI 漂移、缺失率、偏度）生成增/删/改特征的计划。
+    """
+    from ..services.iteration.feature_reconstruction_service import FeatureReconstructionService
+
+    svc = FeatureReconstructionService()
+    plan = svc.build_plan(
+        model_id=body.model_id,
+        lifecycle_run_id=body.lifecycle_run_id,
+        diagnosis_run_id=body.diagnosis_run_id,
+        current_schema_version=body.current_schema_version,
+        drift_features=body.drift_features,
+        high_missing_features=body.high_missing_features,
+        current_feature_names=body.current_feature_names,
+        feature_importance=body.feature_importance,
+        skewness=body.skewness,
+    )
+
+    # 持久化
+    await IterationRepo(db).save_feature_reconstruction_plan(plan)
+    await db.commit()
+
+    return _envelope(
+        request,
+        plan.model_dump(mode="json"),
+        f"feature reconstruction plan created: {plan.plan_id}",
+    )
+
+
+@router.get("/features/reconstruction-plans/{plan_id}")
+async def get_feature_reconstruction_plan(
+    plan_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取特征重构计划及其执行状态。"""
+    repo = IterationRepo(db)
+    plan = await repo.get_feature_reconstruction_plan(plan_id)
+    if plan is None:
+        raise NotFoundError("特征重构计划不存在")
+    return _envelope(request, plan)
+
+
+@internal_router.post("/features/{plan_id}/callback")
+async def feature_reconstruction_callback(
+    plan_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Worker 特征重构完成回调。"""
+    from packages.models.iteration.feature_reconstruction import FeatureReconstructionResult
+
+    body = await request.json()
+    result = FeatureReconstructionResult(**body)
+
+    repo = IterationRepo(db)
+    await repo.save_feature_reconstruction_result(plan_id, result)
+    await db.commit()
+
+    # 自动 resume lifecycle
+    lifecycle_resumed = False
+    if result.lifecycle_run_id and result.status == "SUCCEEDED":
+        try:
+            from ..services.workflow.checkpointer_manager import get_checkpointer
+            from ..services.workflow.workflow_service import WorkflowService
+
+            service = WorkflowService(db, get_checkpointer())
+            resume_result = await service.resume(
+                result.lifecycle_run_id,
+                decision="approved",
+                resume_payload={
+                    "decision": "approved",
+                    "resume_type": "FEATURE_RECONSTRUCTION_COMPLETE",
+                    "feature_reconstruction_plan_id": plan_id,
+                    "status": result.status,
+                    "feature_schema_version": result.feature_schema_version,
+                    "feature_snapshot_id": result.feature_snapshot_id,
+                    "transform_artifact_uri": result.transform_artifact_uri,
+                    "error_message": result.error_message,
+                },
+            )
+            lifecycle_resumed = True
+        except Exception:
+            pass
+
+    return _envelope(
+        request,
+        {
+            "plan_id": plan_id,
+            "status": result.status,
+            "lifecycle_resumed": lifecycle_resumed,
+        },
+        "feature reconstruction callback recorded",
+    )
+
+
 @router.post("/decisions/{proposal_id}/qualifications")
 async def evaluate_qualification(
     proposal_id: str,
@@ -732,3 +851,125 @@ async def deployment_callback(
         },
         "deployment callback recorded",
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# P0: 部署记录查询接口
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/deployments")
+async def list_deployments(
+    request: Request,
+    model_id: str | None = None,
+    status: str | None = None,
+    current_stage: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出部署记录。支持按 model_id / status / current_stage 过滤。"""
+    repo = IterationRepo(db)
+    items = await repo.list_deployments(
+        model_id=model_id, status=status, current_stage=current_stage,
+        limit=limit, offset=offset,
+    )
+    total = await repo.count_deployments(
+        model_id=model_id, status=status, current_stage=current_stage,
+    )
+    return _envelope(request, {"items": items, "total": total})
+
+
+@router.get("/deployments/{deployment_id}")
+async def get_deployment(
+    deployment_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取单个部署记录详情，包含所有阶段历史。"""
+    repo = IterationRepo(db)
+    deployment = await repo.get_deployment(deployment_id)
+    if deployment is None:
+        raise NotFoundError("部署记录不存在")
+    stages = await repo.get_deployment_stages(deployment_id)
+    return _envelope(request, {
+        "deployment": deployment,
+        "stages": stages,
+    })
+
+
+@router.get("/deployments/{deployment_id}/stages")
+async def get_deployment_stages(
+    deployment_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取部署的所有阶段历史。"""
+    repo = IterationRepo(db)
+    deployment = await repo.get_deployment(deployment_id)
+    if deployment is None:
+        raise NotFoundError("部署记录不存在")
+    stages = await repo.get_deployment_stages(deployment_id)
+    return _envelope(request, {"deployment_id": deployment_id, "stages": stages})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# P4: 部署回滚接口
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class RollbackRequest(BaseModel):
+    reason: str = Field(default="MANUAL_ROLLBACK", min_length=1)
+    rollback_target: str | None = None
+    updated_by: str = "admin"
+
+
+@router.post("/deployments/{deployment_id}/rollback")
+async def rollback_deployment(
+    deployment_id: str,
+    request: Request,
+    body: RollbackRequest = RollbackRequest(),
+    db: AsyncSession = Depends(get_db),
+):
+    """触发部署回滚 — 恢复 champion，challenger 流量归 0。"""
+    from ..services.iteration.deployment_safety_service import DeploymentSafetyService
+
+    repo = IterationRepo(db)
+    deployment = await repo.get_deployment(deployment_id)
+    if deployment is None:
+        raise NotFoundError("部署记录不存在")
+
+    svc = DeploymentSafetyService(db)
+    result = await svc.rollback(
+        deployment=deployment,
+        reason=body.reason,
+        rollback_target=body.rollback_target,
+        updated_by=body.updated_by,
+    )
+    await db.commit()
+    return _envelope(request, result, "deployment rolled back")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# P3: 模型路由配置查询
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/routing-configs/{model_id}")
+async def get_routing_config(
+    model_id: str,
+    request: Request,
+    environment: str = "PROD",
+    db: AsyncSession = Depends(get_db),
+):
+    """查询模型的当前路由配置（哪个版本接收多少流量）。"""
+    repo = IterationRepo(db)
+    state = await repo.get_model_deployment_state(model_id, environment)
+    if state is None:
+        return _envelope(request, {
+            "model_id": model_id,
+            "environment": environment,
+            "active_version_code": None,
+            "stable_version_code": None,
+            "challenger_version_code": None,
+            "challenger_traffic_ratio": 0,
+            "message": "no routing config found — model has not been deployed yet",
+        })
+    return _envelope(request, state)

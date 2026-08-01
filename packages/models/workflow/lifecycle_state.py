@@ -55,6 +55,13 @@ class ModelLifecycleState(ContractModel):
     calibration_plan_id: str | None = None
     threshold_plan_id: str | None = None
     manual_review_id: str | None = None
+    feature_reconstruction_plan_id: str | None = None
+    feature_reconstruction_status: str | None = None
+    feature_reconstruction_dispatched: bool | None = None
+    feature_schema_version: str | None = None
+    feature_snapshot_id: str | None = None
+    feature_transform_count: int | None = None
+    transform_artifact_uri: str | None = None
     training_plan_id: str | None = None
     challenger_version: str | None = None
     challenger_qualified: bool | None = None
@@ -68,6 +75,9 @@ class ModelLifecycleState(ContractModel):
     training_callback_status: str | None = None
     training_dispatched: bool | None = None
     training_dispatch_mode: str | None = None
+    training_metrics: dict | None = None
+    validation_metrics: dict | None = None
+    segment_metrics: dict | None = None
     business_round: int | None = None
 
     # 任务四摘要

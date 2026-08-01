@@ -11,7 +11,9 @@ from apps.modelops_api.services.knowledge_service import (
     KnowledgeService,
     AlertResult,
     _DEFAULT_METRIC_ALERT_MAP,
+    _SUPPORTED_TRAINING_ALGORITHMS,
 )
+from workers.training_tasks import TRAINERS
 from packages.models.common.enums import Severity
 
 
@@ -83,3 +85,94 @@ class TestKnowledgeServiceInit:
     def test_service_accepts_driver(self, mock_driver):
         svc = KnowledgeService(mock_driver)
         assert svc.driver is mock_driver
+
+
+def test_kg_training_algorithm_whitelist_matches_worker_registry():
+    assert _SUPPORTED_TRAINING_ALGORITHMS == set(TRAINERS)
+
+
+class _AsyncRecordResult:
+    def __init__(self, records):
+        self.records = records
+
+    def __aiter__(self):
+        self._iter = iter(self.records)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+class _DeploymentSession:
+    def __init__(self):
+        self.params = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def run(self, query, **params):
+        self.query = query
+        self.params = params
+        return _AsyncRecordResult(
+            [
+                {
+                    "alert_code": "BAD_RATE_DRIFT_HIGH",
+                    "risk_code": "BAD_RATE_RISK",
+                    "risk_name": "Bad rate deployment risk",
+                    "risk_relation_key": "BAD_RATE_DRIFT_HIGH|INDICATES|BAD_RATE_RISK",
+                    "risk_weight": 0.8,
+                    "risk_confidence": 0.6,
+                    "strategy_code": "pause_canary",
+                    "action_type": "PAUSE_CANARY",
+                    "strategy_parameters": "{\"traffic_ratio\": 0.05}",
+                    "strategy_relation_key": "BAD_RATE_RISK|RECOMMENDS|pause_canary",
+                    "strategy_weight": 0.7,
+                    "strategy_confidence": 0.5,
+                    "support_case_count": 12,
+                    "natural_case_count": 20,
+                    "mitigates_relation_key": "pause_canary|MITIGATES|BAD_RATE_RISK",
+                    "mitigates_weight": 0.7,
+                    "allowed_stages": ["CANARY_20"],
+                    "policy_refs": ["CANARY_POLICY_V1"],
+                }
+            ]
+        )
+
+
+class _DeploymentDriver:
+    def __init__(self):
+        self.session_obj = _DeploymentSession()
+
+    def session(self, **_kwargs):
+        return self.session_obj
+
+
+async def test_query_deployment_context_keeps_alert_payload_and_stage_param():
+    driver = _DeploymentDriver()
+    svc = KnowledgeService(driver)
+
+    ctx = await svc.query_deployment_context(
+        alert_codes=["BAD_RATE_DRIFT_HIGH"],
+        alert_payloads=[
+            {
+                "alert_code": "BAD_RATE_DRIFT_HIGH",
+                "metric_code": "bad_rate_drift",
+                "stage": "CANARY_20",
+                "value": 0.12,
+            }
+        ],
+        stage="CANARY_20",
+        model_id="credit_model_001",
+    )
+
+    assert driver.session_obj.params["stage"] == "CANARY_20"
+    assert ctx.deployment_alerts[0]["metric_code"] == "bad_rate_drift"
+    assert ctx.deployment_risks[0].evidence_detail["alerts"][0]["value"] == 0.12
+    assert ctx.deployment_risks[0].strategy_candidates[0].allowed_stages == ["CANARY_20"]
+    assert ctx.deployment_risks[0].strategy_candidates[0].parameters == {"traffic_ratio": 0.05}

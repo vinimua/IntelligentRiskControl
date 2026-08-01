@@ -97,37 +97,55 @@ async def _save_external_plan(plan_type: str, plan: dict, dispatch: dict | None 
         logger.warning("external_execution_plan_persist_failed", plan_type=plan_type, exc_info=True)
 
 
-async def _save_deployment_record(state: ModelLifecycleState, result: dict, dispatch: dict | None = None) -> None:
+async def _save_deployment_record(
+    state: ModelLifecycleState | None = None,
+    result: dict | None = None,
+    dispatch: dict | None = None,
+    health_result: dict | None = None,
+    record: dict | None = None,
+) -> None:
+    """持久化部署记录。
+
+    两种调用方式：
+    - 旧式: _save_deployment_record(state, result, dispatch, health_result)
+    - 新式: _save_deployment_record(record=pre_built_record)
+    """
     try:
         from ...database import async_session
         from ...repositories.iteration_repo import IterationRepo
 
-        decision = result.get("deployment_decision")
-        status = {
-            "PROMOTE": "PROMOTED",
-            "ROLLBACK": "ROLLED_BACK",
-            "ABORT_DEPLOYMENT": "ABORTED",
-            "HOLD": "HELD",
-        }.get(decision, "RUNNING")
-        record = {
-            "deployment_id": result.get("deployment_id"),
-            "lifecycle_run_id": _g(state, "lifecycle_run_id"),
-            "qualification_run_id": _g(state, "qualification_run_id"),
-            "model_id": _g(state, "model_id"),
-            "champion_version": _g(state, "champion_version"),
-            "candidate_version": result.get("candidate_version") or _g(state, "challenger_version"),
-            "deployment_stage": result.get("deployment_stage"),
-            "deployment_decision": decision,
-            "status": status,
-            "dispatch_mode": (dispatch or {}).get("dispatch_mode", "INTERNAL"),
-            "external_task_id": (dispatch or {}).get("external_task_id"),
-            "health_json": {
-                "deployment_health_passed": _g(state, "deployment_health_passed", True),
-                "deployment_force_rollback": _g(state, "deployment_force_rollback", False),
-            },
-            "external_response": (dispatch or {}).get("response"),
-        }
-        if record["deployment_id"]:
+        if record is None and result is not None:
+            # 旧式兼容：从 state + result 构建 record
+            state_dict = _state_dict(state) if state else {}
+            decision = result.get("deployment_decision")
+            status = {
+                "PROMOTE": "PROMOTED",
+                "ROLLBACK": "ROLLED_BACK",
+                "ABORT_DEPLOYMENT": "ABORTED",
+                "HOLD": "HELD",
+            }.get(decision, "RUNNING")
+            health_metrics = state_dict.get("validation_metrics") or state_dict.get("training_metrics") or {}
+            record = {
+                "deployment_id": result.get("deployment_id"),
+                "lifecycle_run_id": _g(state, "lifecycle_run_id") if state else None,
+                "qualification_run_id": _g(state, "qualification_run_id") if state else None,
+                "model_id": _g(state, "model_id") if state else None,
+                "champion_version": _g(state, "champion_version") if state else None,
+                "candidate_version": result.get("candidate_version") or (_g(state, "challenger_version") if state else None),
+                "deployment_stage": result.get("deployment_stage"),
+                "deployment_decision": decision,
+                "status": status,
+                "dispatch_mode": (dispatch or {}).get("dispatch_mode", "INTERNAL"),
+                "external_task_id": (dispatch or {}).get("external_task_id"),
+                "health_json": {
+                    "deployment_health_passed": state_dict.get("deployment_health_passed", True) if state_dict else True,
+                    "deployment_force_rollback": _g(state, "deployment_force_rollback", False) if state else False,
+                    "health_check": health_result or {},
+                },
+                "external_response": (dispatch or {}).get("response"),
+            }
+
+        if record and record.get("deployment_id"):
             async with async_session() as session:
                 await IterationRepo(session).save_deployment_record(record)
                 await session.commit()
@@ -557,7 +575,19 @@ async def iteration_decision_node(state: ModelLifecycleState) -> dict:
             decision_svc = RepairDecisionService()
             risk_svc = RiskAssessmentService()
 
-            proposal = decision_svc.decide(decision_input)
+            # P3 KG: 查询 RootCause → Strategy 候选
+            from ...neo4j_db import get_neo4j_driver
+            from ...services.knowledge_service import KnowledgeService
+
+            kg_driver = await get_neo4j_driver()
+            knowledge = KnowledgeService(kg_driver)
+            iteration_ctx = await knowledge.query_iteration_context(
+                root_cause_code=primary_code,
+                diagnosis_run_id=diagnosis_run_id,
+            )
+
+            # 优先用 KG 决策，KG 降级时回退 YAML
+            proposal = decision_svc.decide_with_kg(decision_input, iteration_ctx)
             risk = risk_svc.assess(proposal)
 
             if risk.requires_manual_review and not proposal.requires_manual_review:
@@ -577,6 +607,11 @@ async def iteration_decision_node(state: ModelLifecycleState) -> dict:
                     proposal.action.value if proposal.action else _g(state, "recommended_action")
                 ),
                 "requires_manual_review": proposal.requires_manual_review,
+                "decision_reasons": proposal.decision_reasons,
+                "selected_strategy_code": (
+                    proposal.selected_strategy_code
+                    or (proposal.strategies[0].strategy_code if proposal.strategies else None)
+                ),
                 "current_phase": (
                     LifecyclePhase.MANUAL_REVIEW.value
                     if proposal.requires_manual_review
@@ -816,6 +851,229 @@ async def threshold_plan_node(state: ModelLifecycleState) -> dict:
     }
 
 
+# ═══════════════════════════════════════════════════════════
+# T3-GAP-01：特征重构节点
+# ═══════════════════════════════════════════════════════════
+
+async def feature_reconstruction_node(state: ModelLifecycleState) -> dict:
+    """T3-GAP-01: 特征重构节点。
+
+    在 TrainingPlan 之前执行，根据诊断结果决定增/删/改特征。
+    产出 feature_schema_version / feature_snapshot_id / transform_artifact_uri，
+    供 TrainingPlanNode 使用。
+
+    流程：
+    1. 读取诊断证据（PSI 漂移、缺失率）
+    2. FeatureReconstructionService 生成 Plan
+    3. Demo 模式：内联执行变换
+    4. Celery 模式：派发到 Worker
+    """
+    from ...services.iteration.feature_reconstruction_service import FeatureReconstructionService
+    from ...config import settings
+
+    state_dict = _state_dict(state)
+    diagnosis_run_id = _g(state, "diagnosis_run_id")
+    model_id = _g(state, "model_id", "")
+    lifecycle_run_id = _g(state, "lifecycle_run_id")
+
+    # 1. 从诊断结果提取证据
+    drift_features: list[dict] = state_dict.get("drift_features", [])
+    high_missing_features: list[dict] = state_dict.get("high_missing_features", [])
+    current_feature_names: list[str] = state_dict.get("feature_names", [])
+    feature_importance: dict[str, float] = state_dict.get("feature_importance", {})
+    skewness: dict[str, float] = state_dict.get("skewness", {})
+
+    # 如果没有 drift 信息但有 diagnosis_run_id，尝试从 DB 加载
+    if not drift_features and diagnosis_run_id:
+        try:
+            from ...database import async_session
+            from ...repositories.diagnosis_repo import DiagnosisRepo
+
+            async with async_session() as session:
+                repo = DiagnosisRepo(session)
+                drift_records = await repo.get_drift_features(diagnosis_run_id)
+                if drift_records:
+                    drift_features = [
+                        {"feature_name": r.get("feature_name", ""), "psi_value": r.get("psi_value", 0)}
+                        for r in drift_records
+                    ]
+                    logger.info(
+                        "feature_recon_loaded_drift",
+                        diagnosis_run_id=diagnosis_run_id,
+                        count=len(drift_features),
+                    )
+        except Exception:
+            logger.warning("feature_recon_drift_load_failed", exc_info=True)
+
+    # 2. 生成重构计划
+    svc = FeatureReconstructionService()
+    current_schema = _g(state, "feature_schema_version") or "v1"
+    plan = svc.build_plan(
+        model_id=model_id,
+        lifecycle_run_id=lifecycle_run_id,
+        diagnosis_run_id=diagnosis_run_id,
+        current_schema_version=current_schema,
+        drift_features=drift_features,
+        high_missing_features=high_missing_features,
+        current_feature_names=current_feature_names,
+        feature_importance=feature_importance,
+        skewness=skewness,
+    )
+
+    logger.info(
+        "feature_reconstruction_plan_created",
+        plan_id=plan.plan_id,
+        transforms=len(plan.transforms),
+        before=plan.expected_feature_count_before,
+        after=plan.expected_feature_count_after,
+    )
+
+    try:
+        from ...database import async_session
+        from ...repositories.iteration_repo import IterationRepo
+
+        async with async_session() as session:
+            await IterationRepo(session).save_feature_reconstruction_plan(plan)
+            await session.commit()
+    except Exception:
+        logger.warning(
+            "feature_reconstruction_plan_persist_failed",
+            plan_id=plan.plan_id,
+            exc_info=True,
+        )
+
+    # 3. 执行（Demo: 内联；Celery: 派发）
+    worker_dispatched = False
+    if settings.workflow_use_celery and plan.transforms:
+        try:
+            from workers.app import app as celery_app
+            celery_app.send_task(
+                "workers.feature_tasks.reconstruct_features",
+                args=[{
+                    "plan_id": plan.plan_id,
+                    "lifecycle_run_id": lifecycle_run_id,
+                    "model_id": model_id,
+                    "transforms": [t.model_dump() for t in plan.transforms],
+                    "current_schema_version": plan.current_schema_version,
+                    "target_schema_version": plan.target_schema_version,
+                    "window_ids": ["W2", "W3"],
+                }],
+            )
+            worker_dispatched = True
+            logger.info("feature_recon_dispatched_to_celery", plan_id=plan.plan_id)
+        except Exception:
+            logger.warning("feature_recon_celery_dispatch_failed", exc_info=True)
+
+    # 4. Demo 内联执行
+    if worker_dispatched:
+        return {
+            "feature_reconstruction_plan_id": plan.plan_id,
+            "feature_reconstruction_status": "DISPATCHED",
+            "feature_reconstruction_dispatched": True,
+            "feature_transform_count": len(plan.transforms),
+            "current_phase": LifecyclePhase.WAITING_FEATURE_RECONSTRUCTION.value,
+        }
+
+    feature_schema_version = plan.target_schema_version if plan.transforms else plan.current_schema_version
+    feature_snapshot_id = None
+    if not worker_dispatched and plan.transforms:
+        try:
+            import numpy as np
+            from apps.modelops_api.services.monitoring.window_loader import load_window
+
+            frames = []
+            for wid in ["W2", "W3"]:
+                try:
+                    frames.append(load_window(wid))
+                except Exception:
+                    pass
+            if frames:
+                import pandas as pd
+                df = pd.concat(frames, ignore_index=True)
+                for t in plan.transforms:
+                    try:
+                        if t.operation.value == "DROP":
+                            if t.source_feature in df.columns:
+                                df.drop(columns=[t.source_feature], inplace=True)
+                        elif t.operation.value == "LOG_TRANSFORM" and t.target_feature:
+                            if t.source_feature in df.columns:
+                                offset = t.parameters.get("offset", 1.0)
+                                df[t.target_feature] = np.log(df[t.source_feature].fillna(0).clip(lower=0) + offset)
+                        elif t.operation.value == "INTERACTION" and t.target_feature:
+                            feats = t.parameters.get("features", [t.source_feature])
+                            if all(f in df.columns for f in feats):
+                                df[t.target_feature] = df[feats[0]].fillna(0) * df[feats[1]].fillna(0)
+                    except Exception:
+                        pass
+                feature_snapshot_id = str(uuid.uuid4())
+                logger.info(
+                    "feature_recon_demo_executed",
+                    plan_id=plan.plan_id,
+                    schema=feature_schema_version,
+                    snapshot=feature_snapshot_id,
+                )
+        except Exception:
+            logger.warning("feature_recon_demo_failed", exc_info=True)
+
+    return {
+        "feature_reconstruction_plan_id": plan.plan_id,
+        "feature_reconstruction_status": "SUCCEEDED" if plan.transforms else "SKIPPED_NO_TRANSFORMS",
+        "feature_reconstruction_dispatched": False,
+        "feature_schema_version": feature_schema_version,
+        "feature_snapshot_id": feature_snapshot_id,
+        "feature_transform_count": len(plan.transforms),
+        "current_phase": LifecyclePhase.ITERATING.value,
+    }
+
+
+async def wait_feature_reconstruction_node(state: ModelLifecycleState) -> dict:
+    """Wait for the feature reconstruction worker callback before training planning."""
+    resume_data = interrupt("waiting_feature_reconstruction")
+
+    if not isinstance(resume_data, dict):
+        return {
+            "feature_reconstruction_status": "FAILED",
+            "current_phase": LifecyclePhase.FAILED.value,
+            "last_error": {
+                "reason": "invalid_feature_reconstruction_resume_payload",
+                "at": _now_iso(),
+            },
+        }
+
+    callback_status = str(resume_data.get("status") or "SUCCEEDED").upper()
+    plan_id = resume_data.get("feature_reconstruction_plan_id")
+    if plan_id and plan_id != _g(state, "feature_reconstruction_plan_id"):
+        return {
+            "feature_reconstruction_status": "FAILED",
+            "current_phase": LifecyclePhase.FAILED.value,
+            "last_error": {
+                "reason": "feature_reconstruction_plan_id_mismatch",
+                "at": _now_iso(),
+            },
+        }
+
+    if callback_status != "SUCCEEDED":
+        return {
+            "feature_reconstruction_status": callback_status,
+            "iteration_exit_reason": "TECHNICAL_FAILURE",
+            "current_phase": LifecyclePhase.FAILED.value,
+            "last_error": {
+                "reason": "feature_reconstruction_failed",
+                "message": resume_data.get("error_message"),
+                "at": _now_iso(),
+            },
+        }
+
+    return {
+        "feature_reconstruction_status": "SUCCEEDED",
+        "feature_reconstruction_dispatched": False,
+        "feature_schema_version": resume_data.get("feature_schema_version") or _g(state, "feature_schema_version"),
+        "feature_snapshot_id": resume_data.get("feature_snapshot_id") or _g(state, "feature_snapshot_id"),
+        "transform_artifact_uri": resume_data.get("transform_artifact_uri") or _g(state, "transform_artifact_uri"),
+        "current_phase": LifecyclePhase.ITERATING.value,
+    }
+
+
 async def training_plan_node(state: ModelLifecycleState) -> dict:
     """P1 训练计划节点。
 
@@ -888,21 +1146,28 @@ async def training_plan_node(state: ModelLifecycleState) -> dict:
                     "current_phase": LifecyclePhase.MANUAL_REVIEW.value,
                 }
 
+            # T3-GAP-01: 使用特征重构产出的 schema_version 和 snapshot_id
+            recon_schema = _g(state, "feature_schema_version")
+            recon_snapshot = _g(state, "feature_snapshot_id")
+
+            snapshot_ids = []
+            if recon_snapshot:
+                snapshot_ids = [recon_snapshot]
+            else:
+                snapshot_ids = [
+                    f"snapshot-w2-v{business_round}",
+                    f"snapshot-w3-v{business_round}",
+                ]
+
             plan = TrainingPlanBuilder().build(
                 approved_proposal,
                 risk,
                 approval_id=manual_review_id,
                 iteration_run_id=iteration_run_id,
-                model_algorithm="lightgbm",
-                feature_schema_version="feature-schema-v1",
-                preprocessing_version="preprocess-v1",
+                feature_schema_version=recon_schema,
                 business_round=business_round,
                 data_eligibility_assessments=eligibility_assessments,
-                data_snapshot_ids=[
-                    f"snapshot-w2-v{business_round}",
-                    f"snapshot-w3-v{business_round}",
-                ],
-                label_versions=["label-v1"],
+                data_snapshot_ids=snapshot_ids,
             )
 
             await repo.create_iteration_run(
@@ -953,10 +1218,13 @@ async def training_job_dispatch_node(state: ModelLifecycleState) -> dict:
     try:
         from ...database import async_session
         from ...repositories.iteration_repo import IterationRepo
+        from packages.models.iteration.training_plan import TrainingPlan
         from packages.models.iteration.training_job import TrainingJobInput
 
         async with async_session() as session:
             repo = IterationRepo(session)
+            plan_payload = await repo.get_training_plan(training_plan_id)
+            plan = TrainingPlan.model_validate(plan_payload) if plan_payload else None
             job_input = TrainingJobInput(
                 training_job_id=training_job_id,
                 idempotency_key=f"{iteration_run_id}:round-{business_round}:exp-{experiment_id}",
@@ -964,23 +1232,23 @@ async def training_job_dispatch_node(state: ModelLifecycleState) -> dict:
                 training_plan_id=training_plan_id,
                 experiment_id=experiment_id,
                 business_round=business_round,
-                strategy_code="PLAN_STABLE_REFIT",
-                training_window_ids=["W2"],
-                validation_window_ids=["W3"],
+                strategy_code=plan.strategy_code if plan else "PLAN_STABLE_REFIT",
+                training_window_ids=plan.windows.training_window_ids if plan else ["W2"],
+                validation_window_ids=plan.windows.validation_window_ids if plan else ["W3"],
                 train_time_ranges=[],
                 validation_time_ranges=[],
-                oot_window_id="W4",
-                data_snapshot_ids=[f"snapshot-w2-v{business_round}"],
-                label_versions=["label-v1"],
-                sample_weight_policy={},
-                feature_schema_version="feature-schema-v1",
-                preprocessing_version="preprocess-v1",
-                algorithm="lightgbm",
-                hyperparameters={},
-                target_metrics=["AUC", "KS"],
-                qualification_rule_version="qualification-rules-v1",
-                base_model_version=_g(state, "champion_version"),
-                seed=2026,
+                oot_window_id=plan.windows.oot_window_id if plan else "W4",
+                data_snapshot_ids=plan.data_snapshot_ids if plan else [f"snapshot-w2-v{business_round}"],
+                label_versions=plan.label_versions if plan else ["label-v1"],
+                sample_weight_policy=plan.sample_weight_policy if plan else {},
+                feature_schema_version=plan.feature_schema_version if plan else "feature-schema-v1",
+                preprocessing_version=plan.preprocessing_version if plan else "preprocess-v1",
+                algorithm=plan.algorithm if plan else "lightgbm",
+                hyperparameters=plan.hyperparameter_space if plan else {},
+                target_metrics=plan.target_metric_codes if plan else ["AUC", "KS"],
+                qualification_rule_version=plan.qualification_rule_version if plan else "qualification-rules-v1",
+                base_model_version=plan.frozen_champion_version if plan else _g(state, "champion_version"),
+                seed=plan.random_seed if plan else 2026,
                 artifact_output_uri=f"s3://riskitem/challengers/round-{business_round}",
             )
 
@@ -1002,8 +1270,6 @@ async def training_job_dispatch_node(state: ModelLifecycleState) -> dict:
             # P1: 注入 lifecycle_run_id + P3: 训练窗口配置
             job_dict = job_input.model_dump()
             job_dict["lifecycle_run_id"] = _g(state, "lifecycle_run_id")
-            job_dict["training_window_ids"] = ["W2"]
-            job_dict["validation_window_ids"] = ["W3"]
             dispatch_result = await dispatch_training_job(
                 job_dict,
                 celery_app=celery_app,
@@ -1200,6 +1466,7 @@ async def qualification_node(state: ModelLifecycleState) -> dict:
                 "qualification_run_id": report.qualification_run_id,
                 "challenger_version": report.candidate_version,
                 "challenger_qualified": report.qualified,
+                "validation_metrics": validation_metrics,
                 "current_phase": (
                     LifecyclePhase.QUALIFICATION_COMPLETED.value
                     if report.qualified
@@ -1271,41 +1538,380 @@ async def stop_auto_iteration_node(state: ModelLifecycleState) -> dict:
 # P4：任务四与事件关闭
 # ═══════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════
+# P4：任务四 — DeploymentSubgraph
+# ═══════════════════════════════════════════════════════════
+
 async def deployment_gate_node(state: ModelLifecycleState) -> dict:
-    """P3 部署执行器 — 调用 DeploymentExecutor 执行分阶段部署决策。
+    """P3 部署子图入口 — observe → knowledge → gatekeeper → action → record。
 
-    真实实现：
-    - OFFLINE_VALIDATION → OOT_GATE → SHADOW → CANARY_5 → CANARY_20 → CANARY_50 → PRODUCTION
-    - 每个阶段检查健康指标，不满足则 hold/rollback
-    - 只有 PRODUCTION 阶段才允许关闭事件
+    内部 Pipeline：
+    1. Observe: 健康检查 + 生成 DeploymentAlert
+    2. Knowledge: KG 查询 DeploymentAlert → Risk → Strategy
+    3. Gatekeeper: 综合 KG + health → 最终决策
+    4. Action: 执行决策 (traffic_ratio / promote / rollback)
+    5. Record: 持久化部署记录 + KG 上下文
     """
-    from .executors import dispatch_deployment_action, execute_deployment_stage
+    state_dict = _state_dict(state)
+    current_stage = _g(state, "deployment_stage") or "OFFLINE_VALIDATION"
+    model_id = _g(state, "model_id", "")
+    lifecycle_run_id = _g(state, "lifecycle_run_id")
+    deployment_id = _g(state, "deployment_id") or str(uuid.uuid4())
 
-    result = execute_deployment_stage(_state_dict(state))
-    dispatch = {"dispatch_mode": "INTERNAL"}
+    # ── Step 1: Observe ──
+    health_metrics = state_dict.get("validation_metrics") or state_dict.get("training_metrics") or {}
+    health_result, alerts = await _deployment_observe(
+        state, current_stage, health_metrics, lifecycle_run_id, deployment_id
+    )
+
+    logger.info(
+        "deployment_subgraph_observe",
+        stage=current_stage,
+        passed=health_result["passed"],
+        alert_count=len(alerts),
+        failures=health_result.get("failures", []),
+    )
+
+    # ── Step 2: Knowledge (KG query) ──
+    alert_codes = [a.alert_code for a in alerts]
+    kg_context = await _deployment_knowledge(
+        alert_codes, alerts, current_stage, model_id, lifecycle_run_id, deployment_id
+    )
+
+    logger.info(
+        "deployment_subgraph_knowledge",
+        risk_count=len(kg_context.deployment_risks),
+        degraded=kg_context.retrieval_degraded,
+    )
+
+    # ── Step 3: Gatekeeper ──
+    gatekeeper_decision = _deployment_gatekeeper(
+        current_stage, health_result, kg_context,
+        challenger_qualified=_g(state, "challenger_qualified", True),
+    )
+
+    logger.info(
+        "deployment_subgraph_gatekeeper",
+        decision=gatekeeper_decision.decision,
+        reasons=gatekeeper_decision.decision_reasons,
+        kg_strategy=gatekeeper_decision.selected_strategy_code,
+    )
+
+    # ── Step 4: Action ──
+    challenger = _g(state, "challenger_version") or f"{_g(state, 'champion_version', 'v1')}_challenger_v1"
+    champion = _g(state, "champion_version", "v1")
+    action_result = await _deployment_action(
+        state, gatekeeper_decision, current_stage, model_id,
+        champion, challenger, deployment_id,
+    )
+
+    # ── Step 5: Record ──
+    await _deployment_record(
+        state, deployment_id, current_stage, gatekeeper_decision,
+        health_result, alerts, kg_context, action_result,
+    )
+
+    # 合并结果返回
+    return _deployment_subgraph_result(deployment_id, gatekeeper_decision, action_result)
+
+
+# ── P1: DeploymentObserve ──────────────────────────────────────
+
+async def _deployment_observe(
+    state: ModelLifecycleState,
+    stage: str,
+    health_metrics: dict,
+    lifecycle_run_id: str | None,
+    deployment_id: str,
+) -> tuple[dict, list]:
+    """Step 1: 健康检查 + 生成 DeploymentAlert。"""
+    from ...services.iteration.deployment_safety_service import DeploymentSafetyService
+    from ...services.deployment.deployment_observe_service import build_deployment_alerts
+
+    state_dict = _state_dict(state)
+
+    # 健康检查
+    health_passed_explicit = state_dict.get("deployment_health_passed")
+    force_rollback = bool(state_dict.get("deployment_force_rollback"))
+    if force_rollback:
+        health_result = {
+            "passed": False,
+            "failures": ["injected_force_rollback"],
+            "warnings": [],
+            "rollback_recommended": True,
+            "rollback_reasons": ["injected_force_rollback"],
+        }
+    elif health_passed_explicit is False:
+        health_result = {
+            "passed": False,
+            "failures": ["injected_health_failure"],
+            "warnings": [],
+            "rollback_recommended": False,
+            "rollback_reasons": [],
+        }
+    elif health_metrics:
+        health_result = DeploymentSafetyService.check_stage_health(stage, health_metrics)
+    elif stage in {"OFFLINE_VALIDATION", "OOT_GATE"}:
+        health_result = {"passed": True, "failures": [], "warnings": ["no_health_metrics_provided"]}
+    else:
+        health_result = {
+            "passed": False,
+            "failures": ["health_metrics_required_for_canary_or_production"],
+            "warnings": [],
+            "rollback_recommended": False,
+            "rollback_reasons": [],
+        }
+
+    # 生成告警
+    alerts = build_deployment_alerts(
+        stage=stage,
+        health_metrics=health_metrics,
+        health_result=health_result,
+        lifecycle_run_id=lifecycle_run_id,
+        deployment_id=deployment_id,
+    )
+
+    return health_result, alerts
+
+
+# ── P0: DeploymentKnowledge ────────────────────────────────────
+
+async def _deployment_knowledge(
+    alert_codes: list[str],
+    alerts: list,
+    stage: str,
+    model_id: str,
+    lifecycle_run_id: str | None,
+    deployment_id: str,
+):
+    """Step 2: KG 查询 DeploymentAlert → DeploymentRisk → DeploymentStrategy。"""
+    from packages.models.deployment.deployment_context import DeploymentContext
+
+    if not alert_codes:
+        return DeploymentContext(
+            context_pack_id=f"ctx-{deployment_id}",
+            model_id=model_id,
+            stage=stage,
+            retrieval_degraded=False,
+        )
+
     try:
-        dispatch = dispatch_deployment_action(_state_dict(state), result)
-    except Exception as exc:
-        dispatch = {"dispatch_mode": "EXTERNAL_HTTP", "error": str(exc)}
-        logger.warning("deployment_external_dispatch_failed", deployment_id=result.get("deployment_id"), exc_info=True)
-    await _save_deployment_record(state, result, dispatch)
+        from ...neo4j_db import get_neo4j_driver
+        driver = await get_neo4j_driver()
+        from ...services.knowledge_service import KnowledgeService
+        svc = KnowledgeService(driver)
+        ctx = await svc.query_deployment_context(
+            alert_codes=alert_codes,
+            alert_payloads=[
+                a.model_dump(mode="json") if hasattr(a, "model_dump") else dict(a)
+                for a in alerts
+            ],
+            stage=stage,
+            model_id=model_id,
+        )
+        return ctx
+    except Exception:
+        logger.warning("deployment_kg_query_failed", exc_info=True)
+        from packages.models.deployment.deployment_context import DeploymentContext
+        return DeploymentContext(
+            context_pack_id=f"ctx-{deployment_id}",
+            model_id=model_id,
+            stage=stage,
+            retrieval_degraded=True,
+            degradation_reason="Neo4j connection failed",
+        )
 
-    return {
-        "deployment_id": result.get("deployment_id"),
-        "deployment_stage": result["deployment_stage"],
-        "deployment_decision": result["deployment_decision"],
-        "current_phase": (
-            LifecyclePhase.PROMOTED.value
-            if result["deployment_decision"] == "PROMOTE"
-            else (
-                LifecyclePhase.MANUAL_REVIEW.value
-                if result["deployment_decision"] == "ABORT_DEPLOYMENT"
-                else (
-                    LifecyclePhase.ROLLED_BACK.value
-                    if result["deployment_decision"] == "ROLLBACK"
-                    else LifecyclePhase.CANARY_RUNNING.value
-                )
+
+# ── P2: DeploymentGatekeeper ───────────────────────────────────
+
+def _deployment_gatekeeper(
+    stage: str,
+    health_result: dict,
+    kg_context,
+    *,
+    challenger_qualified: bool = True,
+):
+    """Step 3: 综合 KG + health → 最终决策。"""
+    from ...services.deployment.deployment_gatekeeper_service import DeploymentGatekeeperService
+
+    gk = DeploymentGatekeeperService()
+    return gk.decide(
+        stage=stage,
+        health_result=health_result,
+        deployment_context=kg_context,
+        challenger_qualified=challenger_qualified,
+    )
+
+
+# ── P3: DeploymentAction ───────────────────────────────────────
+
+async def _deployment_action(
+    state: ModelLifecycleState,
+    decision,
+    stage: str,
+    model_id: str,
+    champion: str,
+    challenger: str,
+    deployment_id: str,
+) -> dict:
+    """Step 4: 执行部署决策 (traffic_ratio / promote / rollback)。"""
+    d = decision.decision
+    result = {
+        "deployment_id": deployment_id,
+        "deployment_stage": stage,
+        "deployment_decision": d,
+        "candidate_version": challenger,
+    }
+
+    if d in ("ABORT_DEPLOYMENT", "HOLD"):
+        return result
+
+    try:
+        from ...database import async_session
+        async with async_session() as session:
+            from ...services.iteration.deployment_safety_service import (
+                DeploymentSafetyService, STAGE_TRAFFIC_RATIO,
             )
+            svc = DeploymentSafetyService(session)
+
+            if d == "ADVANCE_STAGE":
+                from .executors import DEPLOYMENT_STAGES
+                try:
+                    idx = DEPLOYMENT_STAGES.index(stage)
+                    next_stage = DEPLOYMENT_STAGES[idx + 1] if idx + 1 < len(DEPLOYMENT_STAGES) else "PRODUCTION"
+                except ValueError:
+                    next_stage = "OFFLINE_VALIDATION"
+                result["deployment_stage"] = next_stage
+                if model_id:
+                    await svc.update_traffic_ratio(
+                        model_id,
+                        next_stage,
+                        champion_version=champion,
+                        challenger_version=challenger,
+                    )
+                logger.info("deployment_action_advance", stage=stage, next=next_stage)
+
+            elif d == "PROMOTE":
+                result["deployment_stage"] = "PRODUCTION"
+                if model_id:
+                    await svc.promote_to_champion({
+                        "deployment_id": deployment_id,
+                        "model_id": model_id,
+                        "champion_version": champion,
+                        "candidate_version": challenger,
+                    })
+                logger.info("deployment_action_promote", challenger=challenger)
+
+            elif d == "ROLLBACK":
+                await svc.rollback(
+                    deployment={
+                        "deployment_id": deployment_id,
+                        "model_id": model_id,
+                        "champion_version": champion,
+                        "current_stage": stage,
+                    },
+                    reason=f"gatekeeper_decision:{d}",
+                    rollback_target=decision.rollback_target,
+                )
+                result["rollback_target"] = decision.rollback_target or champion
+                logger.info("deployment_action_rollback", target=result["rollback_target"])
+
+            await session.commit()
+    except Exception as exc:
+        logger.warning("deployment_action_failed", exc_info=True)
+        result["action_failed"] = True
+        result["action_error"] = str(exc)
+
+    return result
+
+
+# ── P4: DeploymentRecord ───────────────────────────────────────
+
+async def _deployment_record(
+    state: ModelLifecycleState,
+    deployment_id: str,
+    stage: str,
+    gatekeeper_decision,
+    health_result: dict,
+    alerts: list,
+    kg_context,
+    action_result: dict,
+) -> None:
+    """Step 5: 持久化部署记录 + KG 上下文 + Gatekeeper 决策。"""
+    decision = action_result.get("deployment_decision", gatekeeper_decision.decision)
+    status = {
+        "PROMOTE": "PROMOTED",
+        "ROLLBACK": "ROLLED_BACK",
+        "ABORT_DEPLOYMENT": "ABORTED",
+        "HOLD": "HELD",
+    }.get(decision, "RUNNING")
+
+    kg_json = {}
+    try:
+        kg_json = kg_context.model_dump(mode="json") if hasattr(kg_context, "model_dump") else {}
+    except Exception:
+        pass
+
+    alerts_json = []
+    try:
+        alerts_json = [a.model_dump(mode="json") for a in alerts] if alerts else []
+    except Exception:
+        pass
+
+    record = {
+        "deployment_id": deployment_id,
+        "lifecycle_run_id": _g(state, "lifecycle_run_id"),
+        "qualification_run_id": _g(state, "qualification_run_id"),
+        "model_id": _g(state, "model_id"),
+        "champion_version": _g(state, "champion_version"),
+        "candidate_version": action_result.get("candidate_version") or _g(state, "challenger_version"),
+        "deployment_stage": action_result.get("deployment_stage", stage),
+        "deployment_decision": decision,
+        "status": status,
+        "health_json": {
+            "health_check": health_result,
+            "deployment_alerts": alerts_json,
+            "deployment_context": kg_json,
+            "gatekeeper_decision": {
+                "decision": gatekeeper_decision.decision,
+                "selected_strategy_code": gatekeeper_decision.selected_strategy_code,
+                "decision_reasons": gatekeeper_decision.decision_reasons,
+                "gatekeeper_rule_refs": gatekeeper_decision.gatekeeper_rule_refs,
+            },
+            "deployment_action": action_result,
+        },
+    }
+    await _save_deployment_record(state=state, record=record)
+
+
+def _deployment_subgraph_result(
+    deployment_id: str,
+    gatekeeper_decision,
+    action_result: dict,
+) -> dict:
+    """构建子图返回值。"""
+    decision = action_result.get("deployment_decision", gatekeeper_decision.decision)
+    return {
+        "deployment_id": deployment_id,
+        "deployment_stage": action_result.get("deployment_stage", ""),
+        "deployment_decision": decision,
+        "gatekeeper_decision": gatekeeper_decision.decision,
+        "gatekeeper_reasons": gatekeeper_decision.decision_reasons,
+        "selected_deployment_strategy": gatekeeper_decision.selected_strategy_code,
+        "last_error": (
+            {
+                "reason": "deployment_action_failed",
+                "message": action_result.get("action_error"),
+                "at": _now_iso(),
+            }
+            if action_result.get("action_failed")
+            else None
+        ),
+        "current_phase": (
+            LifecyclePhase.PROMOTED.value if decision == "PROMOTE"
+            else LifecyclePhase.MANUAL_REVIEW.value if decision == "ABORT_DEPLOYMENT"
+            else LifecyclePhase.ROLLED_BACK.value if decision == "ROLLBACK"
+            else LifecyclePhase.CANARY_RUNNING.value
         ),
     }
 
@@ -1357,6 +1963,27 @@ async def event_close_node(state: ModelLifecycleState) -> dict:
                     await session.commit()
         except (OSError, ConnectionError, TimeoutError, _DBIntegrityError):
             logger.warning("event_close_fallback", exc_info=True)
+
+    # P4 KG: 生命周期结束后写入 KG 观测
+    try:
+        from ...database import async_session
+        from ...repositories.kg_repo import KnowledgeObservationRepo
+        from ...services.knowledge_observation_service import KnowledgeObservationService
+
+        async with async_session() as session:
+            repo = KnowledgeObservationRepo(session)
+            svc = KnowledgeObservationService()
+            observations = svc.build_observations(_state_dict(state))
+            if observations:
+                ids = await repo.write_observations_batch(observations)
+                await session.commit()
+                logger.info(
+                    "kg_observations_written",
+                    event_id=event_id,
+                    count=len(ids),
+                )
+    except Exception:
+        logger.warning("kg_observation_write_failed", exc_info=True)
 
     return {
         "current_phase": LifecyclePhase.EVENT_CLOSED.value,
@@ -1448,6 +2075,7 @@ def route_after_manual_review(
     "RepairPlanNode",
     "CalibrationPlanNode",
     "ThresholdPlanNode",
+    "FeatureReconstructionNode",
     "TrainingPlanNode",
     END,
 ]:
@@ -1457,13 +2085,13 @@ def route_after_manual_review(
     if action == AgentDecisionAction.MANUAL_REVIEW.value:
         need = _g(state, "need_iteration")
         if need is True:
-            return "TrainingPlanNode"
+            return "FeatureReconstructionNode"
         if need is False:
             return "ObservationCloseNode"
         return END
     routed = _route_after_action(state)
     if routed == "DataEligibilityNode":
-        return "TrainingPlanNode"
+        return "FeatureReconstructionNode"
     if routed in {
         "ObservationCloseNode",
         "RepairPlanNode",
@@ -1472,6 +2100,14 @@ def route_after_manual_review(
     }:
         return routed
     return END
+
+
+def route_after_feature_reconstruction(
+    state: ModelLifecycleState,
+) -> Literal["WaitFeatureReconstructionNode", "TrainingPlanNode"]:
+    if _g(state, "feature_reconstruction_dispatched"):
+        return "WaitFeatureReconstructionNode"
+    return "TrainingPlanNode"
 
 
 def route_after_qualification(
@@ -1493,6 +2129,7 @@ def route_after_deployment_gate(
         return "EventCloseNode"
     if decision == "ADVANCE_STAGE":
         return "DeploymentGateNode"
+    # HOLD / ROLLBACK / ABORT → END
     return END
 
 
@@ -1530,6 +2167,8 @@ def build_graph() -> StateGraph:
     graph.add_node("ThresholdPlanNode", threshold_plan_node)
     graph.add_node("DataEligibilityNode", data_eligibility_node)
     graph.add_node("ManualReviewNode", manual_review_node)
+    graph.add_node("FeatureReconstructionNode", feature_reconstruction_node)
+    graph.add_node("WaitFeatureReconstructionNode", wait_feature_reconstruction_node)
     graph.add_node("TrainingPlanNode", training_plan_node)
 
     # P2 节点
@@ -1574,6 +2213,10 @@ def build_graph() -> StateGraph:
 
     # ManualReview → 分流
     graph.add_conditional_edges("ManualReviewNode", route_after_manual_review)
+
+    # FeatureReconstruction → TrainingPlan
+    graph.add_conditional_edges("FeatureReconstructionNode", route_after_feature_reconstruction)
+    graph.add_edge("WaitFeatureReconstructionNode", "TrainingPlanNode")
 
     # TrainingPlan → TrainingJobDispatch → WaitCallback → Qualification
     graph.add_edge("TrainingPlanNode", "TrainingJobDispatchNode")

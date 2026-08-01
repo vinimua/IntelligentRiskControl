@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     # ── Workflow / Demo ──
     workflow_demo_mode: bool = True
     workflow_use_celery: bool = True
-    workflow_checkpointer: str = "memory"  # "memory" | "postgres"
+    workflow_checkpointer: str = "postgres"  # "memory" | "postgres"
 
     # P4/P5 external execution endpoints. Empty means use internal Celery/mock path.
     calibration_executor_url: str | None = None

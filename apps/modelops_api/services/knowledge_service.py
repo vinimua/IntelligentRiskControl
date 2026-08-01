@@ -11,6 +11,7 @@ Neo4j 不可用时回退到内置默认映射，保证监控链路不中断。
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 
 import structlog
 from neo4j import AsyncDriver as Neo4jAsyncDriver
@@ -29,6 +30,12 @@ _MONITORING_PROFILE = QueryProfile(
     min_evidence_case_count=0,
     min_confidence_lower_bound=0.0,
 )
+
+_SUPPORTED_TRAINING_ALGORITHMS = {
+    "lightgbm",
+    "logistic_regression",
+    "random_forest",
+}
 
 # ── 内置默认 Metric→Alert 映射（Neo4j 不可用时的降级后备）──
 
@@ -326,3 +333,311 @@ class KnowledgeService:
                 exc_info=True,
             )
         return candidates
+
+    async def query_iteration_context(
+        self, root_cause_code: str, diagnosis_run_id: str = "",
+    ):
+        """P3 KG: 查询 RootCause → Strategy 候选 + 反向校验 Strategy → RootCause。
+
+        RootCause─RECOMMENDS→Strategy（正向推荐）
+        Strategy─MITIGATES→RootCause（反向缓解, 用于校验策略是否真的能解决这个根因）
+        """
+        import uuid as _uuid
+        from packages.models.iteration.iteration_context import (
+            IterationContext, StrategyCandidate,
+        )
+
+        candidates: list[StrategyCandidate] = []
+        context_pack_id = str(_uuid.uuid4())
+        retrieval_degraded = False
+
+        try:
+            async with self.driver.session(
+                database="neo4j", default_access_mode="READ"
+            ) as session:
+                # 正向：RootCause → Strategy
+                result = await session.run(
+                    """
+                    MATCH (rc:RootCause {entity_code: $root_cause_code})
+                          -[rec:RECOMMENDS]->(s:Strategy)
+                    WHERE rec.enabled = true
+                    OPTIONAL MATCH (s)-[mit:MITIGATES]->(rc)
+                    WHERE mit.enabled = true
+                    RETURN rc.entity_code AS root_cause_code,
+                           rec.relation_key AS recommends_relation_key,
+                           rec.effective_weight AS effective_weight,
+                           rec.evidence_case_count AS evidence_case_count,
+                           s.entity_code AS strategy_code,
+                           s.training_cost_level AS training_cost_level,
+                           s.risk_level AS risk_level,
+                           s.executor_code AS executor_code,
+                           s.algorithm AS algorithm,
+                           s.feature_schema_version AS feature_schema_version,
+                           s.preprocessing_version AS preprocessing_version,
+                           s.label_versions AS label_versions,
+                           s.allowed_training_window_ids AS allowed_training_window_ids,
+                           s.validation_window_ids AS validation_window_ids,
+                           s.hyperparameters AS hyperparameters,
+                           s.sample_weight_policy AS sample_weight_policy,
+                           mit.relation_key AS mitigates_relation_key,
+                           mit.evidence_case_count AS mitigates_case_count,
+                           mit.confidence_lower_bound AS mitigates_confidence,
+                           mit.effective_weight AS mitigates_weight,
+                           coalesce(
+                               rec.historical_effectiveness,
+                               s.historical_effectiveness,
+                               rec.effective_weight
+                           ) AS historical_effectiveness,
+                           coalesce(rec.support_case_count, rec.evidence_case_count, 0) AS support_case_count,
+                           coalesce(rec.total_case_count, rec.evidence_case_count, 0) AS total_case_count,
+                           coalesce(rec.natural_case_count, rec.evidence_case_count, 0) AS natural_case_count
+                    ORDER BY rec.effective_weight DESC
+                    """,
+                    root_cause_code=root_cause_code,
+                )
+                async for record in result:
+                    sc = record["strategy_code"]
+                    case_count = record["support_case_count"] or 0
+
+                    # 历史有效率 = 有效权重归一化（0-1）
+                    eff_weight = record["effective_weight"] or 0.5
+                    mitigates_weight = record["mitigates_weight"] or 0.0
+                    historical_effectiveness = record["historical_effectiveness"]
+                    if historical_effectiveness is None:
+                        historical_effectiveness = eff_weight * 0.7 + mitigates_weight * 0.3
+                    algorithm = record["algorithm"]
+                    if algorithm:
+                        algorithm = str(algorithm).lower()
+                    if algorithm not in _SUPPORTED_TRAINING_ALGORITHMS:
+                        algorithm = None
+
+                    candidates.append(
+                        StrategyCandidate(
+                            strategy_code=sc,
+                            recommends_relation_key=record["recommends_relation_key"],
+                            mitigates_relation_key=record["mitigates_relation_key"] or "",
+                            relation_effective_weight_snapshot=eff_weight,
+                            historical_effectiveness=historical_effectiveness,
+                            support_case_count=case_count,
+                            total_case_count=record["total_case_count"] or case_count,
+                            natural_case_count=record["natural_case_count"] or 0,
+                            confidence_lower_bound=record["mitigates_confidence"] or eff_weight * 0.5,
+                            required_data_codes=[],
+                            allowed_training_window_ids=record["allowed_training_window_ids"] or [],
+                            validation_window_ids=record["validation_window_ids"] or [],
+                            algorithm=algorithm,
+                            feature_schema_version=record["feature_schema_version"],
+                            preprocessing_version=record["preprocessing_version"],
+                            label_versions=record["label_versions"] or [],
+                            hyperparameters=record["hyperparameters"] or {},
+                            sample_weight_policy=record["sample_weight_policy"] or {},
+                            training_cost_level=record["training_cost_level"] or "MEDIUM",
+                            risk_level=record["risk_level"] or "LOW",
+                            executor_code=record["executor_code"] or "MODEL_RETRAIN",
+                        )
+                    )
+
+                logger.info(
+                    "query_iteration_context_done",
+                    root_cause_code=root_cause_code,
+                    candidate_count=len(candidates),
+                )
+
+        except Exception:
+            logger.warning(
+                "neo4j_query_iteration_context_failed",
+                root_cause_code=root_cause_code,
+                exc_info=True,
+            )
+            retrieval_degraded = True
+            # Neo4j 不可用时降级为空，后续 YAML 规则兜底
+
+        return IterationContext(
+            context_pack_id=context_pack_id,
+            diagnosis_run_id=diagnosis_run_id,
+            root_cause_code=root_cause_code,
+            weight_version="V1",
+            strategy_candidates=candidates,
+            rules=None,
+            retrieved_references=[],
+            retrieval_degraded=retrieval_degraded,
+        )
+
+    # ── P0: 部署 KG 查询 ─────────────────────────────────────────────
+
+    async def query_deployment_context(
+        self,
+        alert_codes: list[str],
+        stage: str,
+        model_id: str = "",
+        min_weight: float = 0.3,
+        alert_payloads: list[dict] | None = None,
+    ):
+        """查询 DeploymentAlert → DeploymentRisk → DeploymentStrategy。
+
+        对每个告警查询 KG：
+        1. DeploymentAlert -[INDICATES]-> DeploymentRisk
+        2. DeploymentRisk -[RECOMMENDS]-> DeploymentStrategy
+        3. DeploymentStrategy -[MITIGATES]-> DeploymentRisk（反向校验）
+        """
+        import uuid as _uuid
+        from packages.models.deployment.deployment_context import (
+            DeploymentContext, DeploymentRisk, DeploymentStrategyCandidate,
+        )
+
+        context_pack_id = str(_uuid.uuid4())
+        retrieval_degraded = False
+        risks: list[DeploymentRisk] = []
+        alert_payloads = alert_payloads or []
+        alert_by_code = {
+            str(payload.get("alert_code")): payload
+            for payload in alert_payloads
+            if payload.get("alert_code")
+        }
+
+        if not alert_codes:
+            return DeploymentContext(
+                context_pack_id=context_pack_id,
+                model_id=model_id,
+                stage=stage,
+                retrieval_degraded=False,
+            )
+
+        try:
+            async with self.driver.session(
+                database="neo4j", default_access_mode="READ"
+            ) as session:
+                result = await session.run(
+                    """
+                    UNWIND $alert_codes AS alert_code
+                    MATCH (a:DeploymentAlert {entity_code: alert_code})
+                          -[ind:INDICATES]->(risk:DeploymentRisk)
+                    WHERE ind.enabled = true
+                      AND ind.effective_weight >= $min_weight
+                    OPTIONAL MATCH (risk)-[rec:RECOMMENDS]->(strategy:DeploymentStrategy)
+                    WHERE rec.enabled = true
+                      AND (
+                        strategy.allowed_stages IS NULL
+                        OR size(strategy.allowed_stages) = 0
+                        OR $stage IN strategy.allowed_stages
+                      )
+                    OPTIONAL MATCH (stage_node:DeploymentStage {entity_code: $stage})
+                          -[allows:ALLOWS]->(strategy)
+                    WHERE allows IS NULL OR allows.enabled = true
+                    OPTIONAL MATCH (policy:DeploymentPolicy)-[con:CONSTRAINS]->(strategy)
+                    WHERE con IS NULL OR con.enabled = true
+                    OPTIONAL MATCH (strategy)-[mit:MITIGATES]->(risk)
+                    WHERE mit.enabled = true
+                    RETURN
+                      alert_code,
+                      risk.entity_code AS risk_code,
+                      risk.name AS risk_name,
+                      ind.relation_key AS risk_relation_key,
+                      ind.effective_weight AS risk_weight,
+                      ind.confidence_lower_bound AS risk_confidence,
+                      strategy.entity_code AS strategy_code,
+                      strategy.action_type AS action_type,
+                      strategy.parameters AS strategy_parameters,
+                      rec.relation_key AS strategy_relation_key,
+                      rec.effective_weight AS strategy_weight,
+                      rec.confidence_lower_bound AS strategy_confidence,
+                      rec.evidence_case_count AS support_case_count,
+                      rec.natural_case_count AS natural_case_count,
+                      mit.relation_key AS mitigates_relation_key,
+                      mit.effective_weight AS mitigates_weight,
+                      strategy.allowed_stages AS allowed_stages,
+                      collect(DISTINCT policy.entity_code) AS policy_refs
+                    ORDER BY ind.effective_weight DESC, rec.effective_weight DESC
+                    """,
+                    alert_codes=alert_codes,
+                    min_weight=min_weight,
+                    stage=stage,
+                )
+
+                # Group by risk_code
+                risk_map: dict[str, DeploymentRisk] = {}
+                async for record in result:
+                    rk = record["risk_code"] or "unknown_risk"
+                    if rk not in risk_map:
+                        alert_code = str(record["alert_code"])
+                        payload = alert_by_code.get(alert_code, {})
+                        risk_map[rk] = DeploymentRisk(
+                            risk_code=rk,
+                            risk_name=record["risk_name"],
+                            relation_key=record["risk_relation_key"] or "",
+                            effective_weight_snapshot=record["risk_weight"] or 0.0,
+                            confidence_lower_bound_snapshot=record["risk_confidence"] or 0.0,
+                            severity="HIGH" if (record["risk_weight"] or 0) > 0.7 else "MEDIUM",
+                            alert_codes=[alert_code],
+                            evidence_detail={
+                                "alerts": [payload] if payload else [],
+                                "stage": stage,
+                            },
+                        )
+                    else:
+                        alert_code = str(record["alert_code"])
+                        if alert_code not in risk_map[rk].alert_codes:
+                            risk_map[rk].alert_codes.append(alert_code)
+                        payload = alert_by_code.get(alert_code)
+                        if payload:
+                            risk_map[rk].evidence_detail.setdefault("alerts", []).append(payload)
+
+                    sc = record["strategy_code"]
+                    if sc:
+                        strategy_parameters = record["strategy_parameters"] or {}
+                        if isinstance(strategy_parameters, str):
+                            try:
+                                strategy_parameters = json.loads(strategy_parameters)
+                            except json.JSONDecodeError:
+                                strategy_parameters = {"raw": strategy_parameters}
+                        risk_map[rk].strategy_candidates.append(
+                            DeploymentStrategyCandidate(
+                                strategy_code=str(sc),
+                                relation_key=record["strategy_relation_key"] or "",
+                                effective_weight_snapshot=record["strategy_weight"] or 0.0,
+                                confidence_lower_bound_snapshot=record["strategy_confidence"] or 0.0,
+                                support_case_count=record["support_case_count"] or 0,
+                                natural_case_count=record["natural_case_count"] or 0,
+                                action_type=record["action_type"] or "",
+                                parameters=strategy_parameters,
+                                allowed_stages=record["allowed_stages"] or [],
+                                policy_refs=record["policy_refs"] or [],
+                                mitigates_relation_key=record["mitigates_relation_key"],
+                            )
+                        )
+
+                risks = list(risk_map.values())
+
+                logger.info(
+                    "deployment_kg_query_done",
+                    alert_count=len(alert_codes),
+                    risk_count=len(risks),
+                    strategy_count=sum(len(r.strategy_candidates) for r in risks),
+                )
+
+        except Exception:
+            logger.warning(
+                "neo4j_deployment_context_failed",
+                alert_codes=alert_codes,
+                exc_info=True,
+            )
+            retrieval_degraded = True
+
+        # Collect gatekeeper rule refs from strategies
+        rule_refs: list[str] = []
+        for risk in risks:
+            for sc in risk.strategy_candidates:
+                ref = f"KG:{sc.strategy_code}"
+                if ref not in rule_refs:
+                    rule_refs.append(ref)
+
+        return DeploymentContext(
+            context_pack_id=context_pack_id,
+            model_id=model_id,
+            stage=stage,
+            deployment_alerts=alert_payloads,
+            deployment_risks=risks,
+            gatekeeper_rule_refs=rule_refs,
+            retrieval_degraded=retrieval_degraded,
+            degradation_reason="Neo4j unavailable" if retrieval_degraded else None,
+        )

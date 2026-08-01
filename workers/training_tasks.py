@@ -34,10 +34,61 @@ def _api_post(path: str, body: dict) -> dict:
         raise
 
 
-def _load_training_data(window_ids: list[str]):
+def _load_feature_snapshot(snapshot_ids: list[str], window_ids: list[str]):
+    """Load reconstructed feature snapshots from MinIO when available."""
+    if not snapshot_ids:
+        return None
+
+    usable_snapshot_ids = [
+        str(snapshot_id)
+        for snapshot_id in snapshot_ids
+        if snapshot_id and not str(snapshot_id).startswith("snapshot-w")
+    ]
+    if not usable_snapshot_ids:
+        return None
+
+    import io as _io
+    import pandas as pd
+    from minio import Minio
+
+    frames = []
+    client = Minio("localhost:9000", access_key="minioadmin", secret_key="minioadmin", secure=False)
+    for snapshot_id in usable_snapshot_ids:
+        response = None
+        try:
+            response = client.get_object("riskitem", f"features/snapshots/{snapshot_id}/data.parquet")
+            df = pd.read_parquet(_io.BytesIO(response.read()))
+            if "__source_window_id" in df.columns:
+                df = df[df["__source_window_id"].isin(window_ids)].copy()
+                df.drop(columns=["__source_window_id"], inplace=True)
+            if not df.empty:
+                frames.append(df)
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
+
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)
+
+
+def _load_training_data(window_ids: list[str], data_snapshot_ids: list[str] | None = None):
     """从 W2/W3 窗口加载训练和验证数据。W4 严格禁止。"""
     import pandas as pd
     from apps.modelops_api.services.monitoring.window_loader import load_window
+
+    try:
+        snapshot_df = _load_feature_snapshot(data_snapshot_ids or [], window_ids)
+        if snapshot_df is not None:
+            logger.info(
+                "feature_snapshot_training_data_loaded windows=%s rows=%d",
+                window_ids,
+                len(snapshot_df),
+            )
+            return snapshot_df
+    except Exception as exc:
+        logger.warning("feature_snapshot_load_failed windows=%s err=%s", window_ids, exc)
 
     frames = []
     for wid in window_ids:
@@ -53,7 +104,7 @@ def _load_training_data(window_ids: list[str]):
     return pd.concat(frames, ignore_index=True)
 
 
-def _train_lightgbm(df, target: str = "is_bad", seed: int = 2026):
+def _train_lightgbm(df, target: str = "is_bad", seed: int = 2026, hyperparameters: dict | None = None):
     """训练 LightGBM 二分类模型。"""
     import lightgbm as lgb
     from sklearn.model_selection import train_test_split
@@ -71,15 +122,18 @@ def _train_lightgbm(df, target: str = "is_bad", seed: int = 2026):
         X, y, test_size=0.2, random_state=seed, stratify=y
     )
 
-    model = lgb.LGBMClassifier(
-        objective="binary",
-        metric="auc",
-        n_estimators=100,
-        max_depth=6,
-        learning_rate=0.05,
-        random_state=seed,
-        verbosity=-1,
-    )
+    params = {
+        "objective": "binary",
+        "metric": "auc",
+        "n_estimators": 100,
+        "max_depth": 6,
+        "learning_rate": 0.05,
+        "random_state": seed,
+        "verbosity": -1,
+    }
+    params.update(hyperparameters or {})
+    params["random_state"] = seed
+    model = lgb.LGBMClassifier(**params)
     model.fit(X_train, y_train)
 
     train_auc = roc_auc_score(y_train, model.predict_proba(X_train)[:, 1])
@@ -100,6 +154,93 @@ def _train_lightgbm(df, target: str = "is_bad", seed: int = 2026):
         "train_ks": train_ks,
         "val_ks": val_ks,
     }
+
+
+def _numeric_feature_cols(df, target: str = "is_bad") -> list[str]:
+    exclude = {"sample_id", "apply_time", target, "y_pred_proba", "risk_score"}
+    return [c for c in df.columns if c not in exclude and df[c].dtype in ("int64", "float64")]
+
+
+def _fit_sklearn_classifier(df, model, target: str = "is_bad", seed: int = 2026):
+    from sklearn.metrics import roc_auc_score
+    from sklearn.model_selection import train_test_split
+
+    feature_cols = _numeric_feature_cols(df, target)
+    logger.info("training_features n=%d", len(feature_cols))
+
+    X = df[feature_cols].fillna(0)
+    y = df[target]
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y, test_size=0.2, random_state=seed, stratify=y
+    )
+
+    model.fit(X_train, y_train)
+
+    train_pred = model.predict_proba(X_train)[:, 1]
+    val_pred = model.predict_proba(X_val)[:, 1]
+    train_auc = roc_auc_score(y_train, train_pred)
+    val_auc = roc_auc_score(y_val, val_pred)
+    train_ks = _compute_ks(y_train, train_pred)
+    val_ks = _compute_ks(y_val, val_pred)
+
+    logger.info(
+        "train_results train_auc=%.4f val_auc=%.4f train_ks=%.4f val_ks=%.4f",
+        train_auc, val_auc, train_ks, val_ks,
+    )
+
+    return {
+        "model": model,
+        "feature_cols": feature_cols,
+        "train_auc": train_auc,
+        "val_auc": val_auc,
+        "train_ks": train_ks,
+        "val_ks": val_ks,
+    }
+
+
+def _train_logistic_regression(
+    df, target: str = "is_bad", seed: int = 2026, hyperparameters: dict | None = None
+):
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    params = {
+        "max_iter": 1000,
+        "class_weight": "balanced",
+        "solver": "liblinear",
+        "random_state": seed,
+    }
+    params.update(hyperparameters or {})
+    params["random_state"] = seed
+    model = make_pipeline(StandardScaler(), LogisticRegression(**params))
+    return _fit_sklearn_classifier(df, model, target=target, seed=seed)
+
+
+def _train_random_forest(
+    df, target: str = "is_bad", seed: int = 2026, hyperparameters: dict | None = None
+):
+    from sklearn.ensemble import RandomForestClassifier
+
+    params = {
+        "n_estimators": 120,
+        "max_depth": 8,
+        "min_samples_leaf": 20,
+        "class_weight": "balanced_subsample",
+        "n_jobs": 1,
+        "random_state": seed,
+    }
+    params.update(hyperparameters or {})
+    params["random_state"] = seed
+    model = RandomForestClassifier(**params)
+    return _fit_sklearn_classifier(df, model, target=target, seed=seed)
+
+
+TRAINERS = {
+    "lightgbm": _train_lightgbm,
+    "logistic_regression": _train_logistic_regression,
+    "random_forest": _train_random_forest,
+}
 
 
 def _compute_ks(y_true, y_pred_proba):
@@ -172,20 +313,30 @@ def train_model(self, job_input: dict):
     lifecycle_run_id = job_input.get("lifecycle_run_id", "")
     training_window_ids = job_input.get("training_window_ids", ["W2"])
     validation_window_ids = job_input.get("validation_window_ids", ["W3"])
+    algorithm = str(job_input.get("algorithm") or "lightgbm").lower()
+    hyperparameters = job_input.get("hyperparameters") or {}
+    data_snapshot_ids = job_input.get("data_snapshot_ids") or []
 
     logger.info("train_model_started job=%s round=%s", training_job_id, business_round)
 
     try:
         # 1. 加载数据
-        train_df = _load_training_data(training_window_ids)
-        val_df = _load_training_data(validation_window_ids)
+        trainer = TRAINERS.get(algorithm)
+        if trainer is None:
+            raise ValueError(f"unsupported training algorithm: {algorithm}")
+
+        train_df = _load_training_data(training_window_ids, data_snapshot_ids)
+        val_df = _load_training_data(validation_window_ids, data_snapshot_ids)
 
         # 2. 训练
-        result = _train_lightgbm(train_df, seed=2026)
+        result = trainer(
+            train_df,
+            seed=int(job_input.get("seed", 2026)),
+            hyperparameters=hyperparameters,
+        )
         model = result["model"]
 
         # 3. 验证指标
-        import lightgbm as lgb
         from sklearn.metrics import roc_auc_score
         val_pred = model.predict_proba(val_df[result["feature_cols"]].fillna(0))[:, 1]
         val_auc = roc_auc_score(val_df["is_bad"], val_pred)
@@ -250,7 +401,7 @@ def train_model(self, job_input: dict):
             },
             "segment_metrics": {"segment_governance_passed": True},
             "artifact_checksums": {"model": "sha256:real"},
-            "environment_manifest": {"python": "3.11", "framework": "lightgbm"},
+            "environment_manifest": {"python": "3.11", "framework": algorithm},
             "technical_retry_count": self.request.retries,
             "error_code": None,
             "error_message": None,

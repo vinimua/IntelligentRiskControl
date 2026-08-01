@@ -292,15 +292,100 @@
         "summary": "Start Run",
         "operationId": "start_run_api_lifecycle_runs_post",
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/StartRunRequest"
               }
             }
-          },
-          "required": true
+          }
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "workflow"
+        ],
+        "summary": "List Lifecycle Runs",
+        "description": "列出 lifecycle runs — 支持按 model_id / phase 过滤。\n\n用于 50 模型并行管控：批量查看各模型当前阶段。",
+        "operationId": "list_lifecycle_runs_api_lifecycle_runs_get",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model Id"
+            }
+          },
+          {
+            "name": "current_phase",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Current Phase"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -433,6 +518,46 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/lifecycle-runs/batch": {
+      "post": {
+        "tags": [
+          "workflow"
+        ],
+        "summary": "Batch Start Runs",
+        "description": "批量启动 lifecycle runs — 最多 50 个模型并行启动。\n\n每个模型独立创建 lifecycle_run，互不影响。",
+        "operationId": "batch_start_runs_api_lifecycle_runs_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1716,6 +1841,87 @@
         }
       }
     },
+    "/api/iteration/features/reconstruction-plans": {
+      "post": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Create Feature Reconstruction Plan",
+        "description": "T3-GAP-01: 创建特征重构计划。\n\n根据诊断证据（PSI 漂移、缺失率、偏度）生成增/删/改特征的计划。",
+        "operationId": "create_feature_reconstruction_plan_api_iteration_features_reconstruction_plans_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeatureReconstructionTriggerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/features/reconstruction-plans/{plan_id}": {
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Get Feature Reconstruction Plan",
+        "description": "获取特征重构计划及其执行状态。",
+        "operationId": "get_feature_reconstruction_plan_api_iteration_features_reconstruction_plans__plan_id__get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/iteration/decisions/{proposal_id}/qualifications": {
       "post": {
         "tags": [
@@ -1744,6 +1950,337 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/deployments": {
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "List Deployments",
+        "description": "列出部署记录。支持按 model_id / status / current_stage 过滤。",
+        "operationId": "list_deployments_api_iteration_deployments_get",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "current_stage",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Current Stage"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/deployments/{deployment_id}": {
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Get Deployment",
+        "description": "获取单个部署记录详情，包含所有阶段历史。",
+        "operationId": "get_deployment_api_iteration_deployments__deployment_id__get",
+        "parameters": [
+          {
+            "name": "deployment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Deployment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/deployments/{deployment_id}/stages": {
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Get Deployment Stages",
+        "description": "获取部署的所有阶段历史。",
+        "operationId": "get_deployment_stages_api_iteration_deployments__deployment_id__stages_get",
+        "parameters": [
+          {
+            "name": "deployment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Deployment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/deployments/{deployment_id}/rollback": {
+      "post": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Rollback Deployment",
+        "description": "触发部署回滚 — 恢复 champion，challenger 流量归 0。",
+        "operationId": "rollback_deployment_api_iteration_deployments__deployment_id__rollback_post",
+        "parameters": [
+          {
+            "name": "deployment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Deployment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackRequest",
+                "default": {
+                  "reason": "MANUAL_ROLLBACK",
+                  "updated_by": "admin"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/routing-configs/{model_id}": {
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Get Routing Config",
+        "description": "查询模型的当前路由配置（哪个版本接收多少流量）。",
+        "operationId": "get_routing_config_api_iteration_routing_configs__model_id__get",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Id"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "PROD",
+              "title": "Environment"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/internal/iteration/features/{plan_id}/callback": {
+      "post": {
+        "tags": [
+          "iteration-internal"
+        ],
+        "summary": "Feature Reconstruction Callback",
+        "description": "Worker 特征重构完成回调。",
+        "operationId": "feature_reconstruction_callback_api_internal_iteration_features__plan_id__callback_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2023,10 +2560,712 @@
           }
         }
       }
+    },
+    "/api/kg/ping": {
+      "get": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "Ping",
+        "operationId": "ping_api_kg_ping_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kg/calibration-runs": {
+      "get": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "List Calibration Runs",
+        "description": "列出校准运行记录，支持按 data_track / status 过滤。",
+        "operationId": "list_calibration_runs_api_kg_calibration_runs_get",
+        "parameters": [
+          {
+            "name": "data_track",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Data Track"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "Trigger Calibration",
+        "description": "触发一次 KG 权重校准。\n\n内部调用 Beta-Binomial V2 算法聚合观测并生成权重快照。\n同步执行并返回 calibration_run_id。",
+        "operationId": "trigger_calibration_api_kg_calibration_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriggerCalibrationRequest",
+                "default": {
+                  "data_track": "NATURAL",
+                  "rule_version": "BETA_BINOMIAL_V2",
+                  "weight_version": "KG_WEIGHT_BETA_V2"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kg/calibration-runs/{calibration_run_id}": {
+      "get": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "Get Calibration Run",
+        "description": "获取校准运行详情，包含快照列表和同步任务。",
+        "operationId": "get_calibration_run_api_kg_calibration_runs__calibration_run_id__get",
+        "parameters": [
+          {
+            "name": "calibration_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Calibration Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kg/calibration-runs/{calibration_run_id}/apply-to-neo4j": {
+      "post": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "Apply Calibration To Neo4J",
+        "description": "将指定校准运行的权重快照同步到 Neo4j。",
+        "operationId": "apply_calibration_to_neo4j_api_kg_calibration_runs__calibration_run_id__apply_to_neo4j_post",
+        "parameters": [
+          {
+            "name": "calibration_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Calibration Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyToNeo4jRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kg/sync-jobs": {
+      "get": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "List Sync Jobs",
+        "description": "列出 Neo4j 同步任务。",
+        "operationId": "list_sync_jobs_api_kg_sync_jobs_get",
+        "parameters": [
+          {
+            "name": "calibration_run_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Calibration Run Id"
+            }
+          },
+          {
+            "name": "relation_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Relation Type"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kg/observations": {
+      "get": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "List Observations",
+        "description": "列出 KG 观测记录。",
+        "operationId": "list_observations_api_kg_observations_get",
+        "parameters": [
+          {
+            "name": "lifecycle_run_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lifecycle Run Id"
+            }
+          },
+          {
+            "name": "relation_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Relation Key"
+            }
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Direction"
+            }
+          },
+          {
+            "name": "data_track",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Data Track"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kg/weight-snapshots": {
+      "get": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "List Weight Snapshots",
+        "description": "列出权重快照。",
+        "operationId": "list_weight_snapshots_api_kg_weight_snapshots_get",
+        "parameters": [
+          {
+            "name": "relation_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Relation Key"
+            }
+          },
+          {
+            "name": "weight_version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Weight Version"
+            }
+          },
+          {
+            "name": "applied_to_neo4j",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Applied To Neo4J"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kg/weight-trend/{relation_key}": {
+      "get": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "Get Weight Trend",
+        "description": "获取某个 relation_key 的权重变化趋势（用于趋势图）。\n\n返回按时间排序的权重快照列表，包含 old/new weight、置信区间。",
+        "operationId": "get_weight_trend_api_kg_weight_trend__relation_key__get",
+        "parameters": [
+          {
+            "name": "relation_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Relation Key"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 30,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kg/relation-keys": {
+      "get": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "List Relation Keys",
+        "description": "列出所有已知的 relation_key 及其最新权重。",
+        "operationId": "list_relation_keys_api_kg_relation_keys_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/kg/stats": {
+      "get": {
+        "tags": [
+          "kg-calibration"
+        ],
+        "summary": "Get Kg Stats",
+        "description": "KG 校准总体统计信息。",
+        "operationId": "get_kg_stats_api_kg_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "ApplyToNeo4jRequest": {
+        "properties": {
+          "weight_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Version"
+          }
+        },
+        "type": "object",
+        "title": "ApplyToNeo4jRequest"
+      },
+      "BatchStartRequest": {
+        "properties": {
+          "models": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Models",
+            "description": "批量启动列表，每项包含 model_id, champion_version, trigger_type"
+          },
+          "max_concurrency": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Max Concurrency",
+            "default": 10
+          }
+        },
+        "type": "object",
+        "required": [
+          "models"
+        ],
+        "title": "BatchStartRequest"
+      },
       "DataEligibilityInput": {
         "properties": {
           "window_id": {
@@ -2381,6 +3620,85 @@
           "missing_rate"
         ],
         "title": "FeatureMissingStat"
+      },
+      "FeatureReconstructionTriggerRequest": {
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Model Id"
+          },
+          "lifecycle_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle Run Id"
+          },
+          "diagnosis_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diagnosis Run Id"
+          },
+          "current_schema_version": {
+            "type": "string",
+            "title": "Current Schema Version",
+            "default": "v1"
+          },
+          "drift_features": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Drift Features"
+          },
+          "high_missing_features": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "High Missing Features"
+          },
+          "current_feature_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Current Feature Names"
+          },
+          "feature_importance": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Feature Importance"
+          },
+          "skewness": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Skewness"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model_id"
+        ],
+        "title": "FeatureReconstructionTriggerRequest"
       },
       "HTTPValidationError": {
         "properties": {
@@ -3078,6 +4396,34 @@
         ],
         "title": "ReviewDecision"
       },
+      "RollbackRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason",
+            "default": "MANUAL_ROLLBACK"
+          },
+          "rollback_target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rollback Target"
+          },
+          "updated_by": {
+            "type": "string",
+            "title": "Updated By",
+            "default": "admin"
+          }
+        },
+        "type": "object",
+        "title": "RollbackRequest"
+      },
       "RootCauseCandidate": {
         "properties": {
           "root_cause_code": {
@@ -3600,6 +4946,32 @@
         ],
         "title": "TrainingJobInput",
         "description": "训练参数；技术重试必须复用 training_job_id 和 idempotency_key。"
+      },
+      "TriggerCalibrationRequest": {
+        "properties": {
+          "data_track": {
+            "type": "string",
+            "pattern": "^(NATURAL|SCENARIO)$",
+            "title": "Data Track",
+            "default": "NATURAL"
+          },
+          "rule_version": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Rule Version",
+            "default": "BETA_BINOMIAL_V2"
+          },
+          "weight_version": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Weight Version",
+            "default": "KG_WEIGHT_BETA_V2"
+          }
+        },
+        "type": "object",
+        "title": "TriggerCalibrationRequest"
       },
       "TriggerDiagnosisRequest": {
         "properties": {

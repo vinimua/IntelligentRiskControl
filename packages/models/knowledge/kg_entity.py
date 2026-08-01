@@ -58,9 +58,11 @@ class KgRelationObservation(ContractModel):
     relation_key: str
     source_domain: str  # DIAGNOSIS / ITERATION / DEPLOYMENT
     source_record_id: str
+    lifecycle_run_id: str | None = None
     direction: EvidenceDirection
     evidence_score: float | None = None
     quality_weight: float = 1.0
     weighted_strength: float | None = None
     data_track: DataTrack = DataTrack.NATURAL
+    evidence_detail: dict | None = None
     observed_at: datetime | None = None

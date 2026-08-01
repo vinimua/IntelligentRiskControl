@@ -735,3 +735,249 @@ class IterationRepo:
                 "result": json.dumps(record, ensure_ascii=False),
             },
         )
+
+    # ── P0: 部署记录查询 ──
+
+    async def list_deployments(
+        self,
+        *,
+        model_id: str | None = None,
+        status: str | None = None,
+        current_stage: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        where = ["1=1"]
+        params: dict = {"limit": limit, "offset": offset}
+
+        if model_id:
+            where.append("d.model_id = :mid")
+            params["mid"] = model_id
+        if status:
+            where.append("d.status = :st")
+            params["st"] = status.upper()
+        if current_stage:
+            where.append("d.current_stage = :stage")
+            params["stage"] = current_stage.upper()
+
+        result = await self.session.execute(
+            text(f"""
+                SELECT d.*, m.current_champion_version as current_champion
+                FROM iteration.deployment_records d
+                LEFT JOIN model_registry.models m ON d.model_id = m.model_id
+                WHERE {' AND '.join(where)}
+                ORDER BY d.created_at DESC
+                LIMIT :limit OFFSET :offset
+            """),
+            params,
+        )
+        return [dict(r) for r in result.mappings()]
+
+    async def count_deployments(
+        self,
+        *,
+        model_id: str | None = None,
+        status: str | None = None,
+        current_stage: str | None = None,
+    ) -> int:
+        where = ["1=1"]
+        params: dict = {}
+        if model_id:
+            where.append("model_id = :mid")
+            params["mid"] = model_id
+        if status:
+            where.append("status = :st")
+            params["st"] = status.upper()
+        if current_stage:
+            where.append("current_stage = :stage")
+            params["stage"] = current_stage.upper()
+
+        result = await self.session.execute(
+            text(f"SELECT COUNT(*) AS cnt FROM iteration.deployment_records WHERE {' AND '.join(where)}"),
+            params,
+        )
+        return result.scalar() or 0
+
+    async def get_deployment(self, deployment_id: str) -> dict | None:
+        result = await self.session.execute(
+            text("""
+                SELECT d.*, m.current_champion_version as current_champion
+                FROM iteration.deployment_records d
+                LEFT JOIN model_registry.models m ON d.model_id = m.model_id
+                WHERE d.deployment_id = :did
+            """),
+            {"did": deployment_id},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+    async def get_deployment_stages(self, deployment_id: str) -> list[dict]:
+        result = await self.session.execute(
+            text("""
+                SELECT * FROM iteration.deployment_stage_records
+                WHERE deployment_id = :did
+                ORDER BY created_at ASC
+            """),
+            {"did": deployment_id},
+        )
+        return [dict(r) for r in result.mappings()]
+
+    async def save_deployment_stage_record(self, record: dict) -> None:
+        """单独写入一条 stage 记录（用于阶段推进时）。"""
+        await self.session.execute(
+            text("""
+                INSERT INTO iteration.deployment_stage_records
+                    (deployment_id, stage, decision, status, health_json, result_json)
+                VALUES (:deployment, :stage, :decision, :status,
+                        CAST(:health AS JSONB), CAST(:result AS JSONB))
+            """),
+            {
+                "deployment": record["deployment_id"],
+                "stage": record["stage"],
+                "decision": record["decision"],
+                "status": record.get("status", "RUNNING"),
+                "health": json.dumps(record.get("health_json", {}), ensure_ascii=False),
+                "result": json.dumps(record, ensure_ascii=False),
+            },
+        )
+
+    # ── P3: 模型部署状态（routing config） ──
+
+    async def get_model_deployment_state(self, model_id: str, environment: str = "PROD") -> dict | None:
+        result = await self.session.execute(
+            text("""
+                SELECT * FROM model_registry.model_deployment_state
+                WHERE model_id = :mid AND environment = :env
+            """),
+            {"mid": model_id, "env": environment},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+    async def upsert_model_deployment_state(self, record: dict) -> None:
+        """写入或更新 model_registry.model_deployment_state。"""
+        await self.session.execute(
+            text("""
+                INSERT INTO model_registry.model_deployment_state
+                    (model_id, environment, active_version_code, stable_version_code,
+                     challenger_version_code, challenger_traffic_ratio, state_version, updated_by)
+                VALUES (:mid, :env, :active, :stable, :challenger, :ratio, :ver, :by)
+                ON CONFLICT (model_id, environment) DO UPDATE SET
+                    active_version_code      = EXCLUDED.active_version_code,
+                    stable_version_code      = EXCLUDED.stable_version_code,
+                    challenger_version_code  = EXCLUDED.challenger_version_code,
+                    challenger_traffic_ratio = EXCLUDED.challenger_traffic_ratio,
+                    state_version            = model_registry.model_deployment_state.state_version + 1,
+                    updated_by               = EXCLUDED.updated_by,
+                    updated_at               = NOW()
+            """),
+            {
+                "mid": record["model_id"],
+                "env": record.get("environment", "PROD"),
+                "active": record.get("active_version_code"),
+                "stable": record.get("stable_version_code"),
+                "challenger": record.get("challenger_version_code"),
+                "ratio": record.get("challenger_traffic_ratio", 0),
+                "ver": record.get("state_version", 1),
+                "by": record.get("updated_by", "system"),
+            },
+        )
+
+    # ── T3-GAP-01: 特征重构 ──
+
+    async def save_feature_reconstruction_plan(self, plan) -> None:
+        """保存 FeatureReconstructionPlan 到 external_execution_plans。"""
+        from packages.models.iteration.feature_reconstruction import FeatureReconstructionPlan
+        await self.session.execute(
+            text("""
+                INSERT INTO iteration.external_execution_plans
+                    (plan_type, plan_id, lifecycle_run_id, action, status,
+                     request_json, created_at)
+                VALUES ('FEATURE_RECONSTRUCTION', :pid, :lrid, 'RECONSTRUCT_FEATURES',
+                        'PLANNED', CAST(:req AS JSONB), NOW())
+                ON CONFLICT (plan_id) DO UPDATE SET
+                    request_json = CAST(:req AS JSONB),
+                    updated_at = NOW()
+            """),
+            {
+                "pid": plan.plan_id,
+                "lrid": plan.lifecycle_run_id,
+                "req": json.dumps(plan.model_dump(mode="json") if hasattr(plan, "model_dump") else plan, ensure_ascii=False),
+            },
+        )
+
+    async def get_feature_reconstruction_plan(self, plan_id: str) -> dict | None:
+        """获取特征重构计划及执行状态。"""
+        result = await self.session.execute(
+            text("""
+                SELECT * FROM iteration.external_execution_plans
+                WHERE plan_id = :pid AND plan_type = 'FEATURE_RECONSTRUCTION'
+            """),
+            {"pid": plan_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("request_json") and isinstance(d["request_json"], str):
+            import json as _j
+            try:
+                d["request_json"] = _j.loads(d["request_json"])
+            except Exception:
+                pass
+        if d.get("result_json") and isinstance(d["result_json"], str):
+            import json as _j
+            try:
+                d["result_json"] = _j.loads(d["result_json"])
+            except Exception:
+                pass
+        return d
+
+    async def save_feature_reconstruction_result(self, plan_id: str, result) -> None:
+        """保存 Worker 回调结果。"""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        result_dict = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+        status = result_dict.get("status", "FAILED").upper()
+        update_result = await self.session.execute(
+            text("""
+                UPDATE iteration.external_execution_plans
+                SET status = :st,
+                    result_json = CAST(:res AS JSONB),
+                    completed_at = :now,
+                    updated_at = :now,
+                    error_message = :err
+                WHERE plan_id = :pid AND plan_type = 'FEATURE_RECONSTRUCTION'
+            """),
+            {
+                "pid": plan_id,
+                "st": "SUCCEEDED" if status == "SUCCEEDED" else "FAILED",
+                "res": json.dumps(result_dict, ensure_ascii=False),
+                "now": now,
+                "err": result_dict.get("error_message"),
+            },
+        )
+        if getattr(update_result, "rowcount", 0) == 0:
+            await self.session.execute(
+                text("""
+                    INSERT INTO iteration.external_execution_plans
+                        (plan_type, plan_id, lifecycle_run_id, action, status,
+                         request_json, result_json, error_message, completed_at,
+                         created_at, updated_at)
+                    VALUES ('FEATURE_RECONSTRUCTION', :pid, :lrid,
+                            'RECONSTRUCT_FEATURES', :st, CAST(:req AS JSONB),
+                            CAST(:res AS JSONB), :err, :now, :now, :now)
+                """),
+                {
+                    "pid": plan_id,
+                    "lrid": result_dict.get("lifecycle_run_id"),
+                    "st": "SUCCEEDED" if status == "SUCCEEDED" else "FAILED",
+                    "req": json.dumps(
+                        {"plan_id": plan_id, "recovered_from_callback": True},
+                        ensure_ascii=False,
+                    ),
+                    "res": json.dumps(result_dict, ensure_ascii=False),
+                    "err": result_dict.get("error_message"),
+                    "now": now,
+                },
+            )

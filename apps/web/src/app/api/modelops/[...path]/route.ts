@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const DEFAULT_MODEL_OPS_API_BASE =
-  process.env.NEXT_PUBLIC_MODEL_OPS_API_BASE ?? "http://localhost:8000";
+  process.env.NEXT_PUBLIC_MODEL_OPS_API_BASE ?? "http://localhost:8001";
 
 type RouteContext = {
   params: {

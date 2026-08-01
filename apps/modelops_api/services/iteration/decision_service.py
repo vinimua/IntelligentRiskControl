@@ -48,6 +48,128 @@ class RepairDecisionService:
         evidence = {code.upper() for code in primary.evidence_types}
         return {"D", "I", "T"}.issubset(evidence) and bool({"C", "R"} & evidence)
 
+    def decide_with_kg(
+        self,
+        request: DecisionInput,
+        iteration_context,
+    ) -> DecisionProposal:
+        """P3 KG: 使用知识图谱策略候选排序生成决策。
+
+        优先级：
+        1. KG 返回 strategy_candidates → 按 historical_effectiveness 排序
+        2. 低案例数 (< 10) → 强制人工复核
+        3. 缺少 MITIGATES 反向关系 → 策略不可自动执行
+        4. KG 无结果 → 降级到纯 YAML 规则 decide()
+        """
+        causes = sorted(request.root_causes, key=lambda item: item.score, reverse=True)
+        primary_code = self._normalize_code(causes[0].root_cause_code)
+        gate_passed, gate_reasons = self._root_gate(causes)
+
+        if not gate_passed:
+            return self._proposal(
+                request=request, causes=causes,
+                action=RecommendedAction.MANUAL_REVIEW, strategy_codes=[],
+                confidence=ConfidenceLevel.LOW, reasons=gate_reasons,
+                requires_manual_review=True,
+            )
+
+        # ── KG 策略候选 ──
+        kg_candidates = getattr(iteration_context, "strategy_candidates", []) or []
+
+        if iteration_context.retrieval_degraded:
+            return self._proposal(
+                request=request, causes=causes,
+                action=RecommendedAction.MANUAL_REVIEW, strategy_codes=[],
+                confidence=ConfidenceLevel.LOW,
+                reasons=gate_reasons + ["KG_RETRIEVAL_DEGRADED"],
+                requires_manual_review=True,
+            )
+
+        if not kg_candidates:
+            return self.decide(request)
+
+        if kg_candidates and not iteration_context.retrieval_degraded:
+            # 按 historical_effectiveness 降序
+            sorted_candidates = sorted(
+                kg_candidates,
+                key=lambda c: (c.historical_effectiveness, c.support_case_count),
+                reverse=True,
+            )
+            best = sorted_candidates[0]
+
+            if not best.mitigates_relation_key:
+                return self._proposal(
+                    request=request, causes=causes,
+                    action=RecommendedAction.MANUAL_REVIEW, strategy_codes=[],
+                    confidence=ConfidenceLevel.MEDIUM,
+                    reasons=gate_reasons + ["KG_MITIGATES_RELATION_MISSING"],
+                    requires_manual_review=True,
+                )
+
+            # 低案例数 → 强制人工复核
+            requires_manual = best.support_case_count < 10
+
+            # 原因
+            reasons = gate_reasons + [
+                f"KG_STRATEGY:{best.strategy_code}",
+                f"HISTORICAL_EFFECTIVENESS:{best.historical_effectiveness:.3f}",
+                f"SUPPORT_CASES:{best.support_case_count}",
+                f"RELATION:{best.recommends_relation_key}",
+            ]
+            if best.mitigates_relation_key:
+                reasons.append(f"MITIGATES:{best.mitigates_relation_key}")
+
+            # 构建 StrategySelection 含 KG 证据
+            kg_selections = [
+                StrategySelection(
+                    strategy_code=best.strategy_code,
+                    parameters={
+                        "recommends_relation_key": best.recommends_relation_key,
+                        "mitigates_relation_key": best.mitigates_relation_key,
+                        "historical_effectiveness": best.historical_effectiveness,
+                        "support_case_count": best.support_case_count,
+                        "algorithm": best.algorithm,
+                        "feature_schema_version": best.feature_schema_version,
+                        "preprocessing_version": best.preprocessing_version,
+                        "label_versions": best.label_versions,
+                        "training_window_ids": best.allowed_training_window_ids,
+                        "validation_window_ids": best.validation_window_ids,
+                        "hyperparameters": best.hyperparameters,
+                        "sample_weight_policy": best.sample_weight_policy,
+                    },
+                    rationale=(
+                        f"KG推荐: {primary_code}→{best.strategy_code} "
+                        f"(历史有效率 {best.historical_effectiveness:.3f}, "
+                        f"案例数 {best.support_case_count})"
+                    ),
+                )
+            ]
+
+            return self._proposal_kg(
+                request=request, causes=causes,
+                action=RecommendedAction.MODEL_ITERATION,
+                selections=kg_selections,
+                confidence=(
+                    ConfidenceLevel.HIGH if best.support_case_count >= 10
+                    else ConfidenceLevel.MEDIUM
+                ),
+                reasons=reasons,
+                requires_manual_review=requires_manual,
+            )
+
+        # ── KG 降级：回退到 YAML 规则 ──
+        if iteration_context.retrieval_degraded:
+            return self._proposal(
+                request=request, causes=causes,
+                action=RecommendedAction.MANUAL_REVIEW, strategy_codes=[],
+                confidence=ConfidenceLevel.LOW,
+                reasons=gate_reasons + ["KG_RETRIEVAL_DEGRADED"],
+                requires_manual_review=True,
+            )
+
+        # KG 无结果 → 走原有的 YAML 规则
+        return self.decide(request)
+
     def decide(self, request: DecisionInput) -> DecisionProposal:
         causes = sorted(request.root_causes, key=lambda item: item.score, reverse=True)
         primary = causes[0]
@@ -162,6 +284,57 @@ class RepairDecisionService:
             strategies,
             ConfidenceLevel.HIGH,
             reasons,
+        )
+
+    def _proposal_kg(
+        self,
+        request: DecisionInput,
+        causes: list[RootCauseCandidate],
+        action: RecommendedAction,
+        selections: list[StrategySelection],
+        confidence: ConfidenceLevel,
+        reasons: list[str],
+        requires_manual_review: bool = False,
+    ) -> DecisionProposal:
+        """P3 KG: 直接使用预构建的 KG StrategySelection（跳过 YAML 查找）。"""
+        return DecisionProposal(
+            proposal_id=str(uuid4()),
+            diagnosis_run_id=request.diagnosis_run_id,
+            lifecycle_run_id=request.lifecycle_run_id,
+            model_id=request.model_id,
+            champion_version=request.champion_version,
+            primary_root_cause_code=self._normalize_code(causes[0].root_cause_code),
+            primary_root_cause_score=causes[0].score,
+            top1_top2_gap=(
+                causes[0].score - causes[1].score if len(causes) > 1 else None
+            ),
+            evidence_coverage=causes[0].evidence_coverage,
+            contributing_root_cause_codes=[
+                self._normalize_code(item.root_cause_code) for item in causes[1:]
+            ],
+            action=action,
+            need_iteration=action == RecommendedAction.MODEL_ITERATION,
+            strategies=selections,
+            selected_strategy_code=(
+                selections[0].strategy_code if selections else None
+            ),
+            target_metric_codes=[
+                metric.metric_code for metric in request.degraded_metrics if metric.degraded
+            ],
+            proposed_window_policy=self.config.iteration.training_window_policy,
+            confidence=confidence,
+            decision_reasons=reasons,
+            status=(
+                ProposalStatus.PENDING_REVIEW if requires_manual_review
+                else ProposalStatus.DRAFT
+            ),
+            executable=False,
+            requires_manual_review=requires_manual_review,
+            rule_version=request.rule_version,
+            rule_versions={
+                "decision": request.rule_version,
+                "strategy": self.config.strategies.rule_version,
+            },
         )
 
     def _proposal(

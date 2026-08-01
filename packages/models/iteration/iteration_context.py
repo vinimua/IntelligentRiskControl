@@ -21,6 +21,13 @@ class StrategyCandidate(ContractModel):
     confidence_lower_bound: float
     required_data_codes: list[str] = Field(default_factory=list)
     allowed_training_window_ids: list[str] = Field(default_factory=list)
+    validation_window_ids: list[str] = Field(default_factory=list)
+    algorithm: str | None = None
+    feature_schema_version: str | None = None
+    preprocessing_version: str | None = None
+    label_versions: list[str] = Field(default_factory=list)
+    hyperparameters: dict = Field(default_factory=dict)
+    sample_weight_policy: dict = Field(default_factory=dict)
     training_cost_level: str = "MEDIUM"
     risk_level: str = "LOW"
     executor_code: str

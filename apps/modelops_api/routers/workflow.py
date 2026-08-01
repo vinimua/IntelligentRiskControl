@@ -5,15 +5,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..core.exceptions import NotFoundError, request_trace_id
-from ..database import get_db
+from ..database import async_session, get_db
 from ..services.workflow.workflow_service import WorkflowService
 from ..services.workflow.checkpointer_manager import get_checkpointer
 
@@ -117,3 +119,137 @@ async def cancel_run(
     service = WorkflowService(db, checkpointer)
     await service.cancel(lifecycle_run_id)
     return _envelope(request, {"lifecycle_run_id": lifecycle_run_id}, message="lifecycle cancelled")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# P4: 50 模型并行管控
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BatchStartRequest(BaseModel):
+    models: list[dict] = Field(
+        min_length=1,
+        max_length=50,
+        description="批量启动列表，每项包含 model_id, champion_version, trigger_type",
+    )
+
+    max_concurrency: int = Field(default=10, ge=1, le=50)
+
+
+class BatchStartResult(BaseModel):
+    total: int
+    succeeded: int
+    failed: int
+    results: list[dict]
+
+
+@router.post("/batch")
+async def batch_start_runs(
+    request: Request,
+    body: BatchStartRequest,
+):
+    """批量启动 lifecycle runs — 最多 50 个模型并行启动。
+
+    每个模型独立创建 lifecycle_run，互不影响。
+    """
+    checkpointer = get_checkpointer()
+    semaphore = asyncio.Semaphore(body.max_concurrency)
+
+    async def start_one(entry: dict) -> dict:
+        model_id = entry.get("model_id", "")
+        champion_version = entry.get("champion_version", "")
+        trigger_type = entry.get("trigger_type", "SCHEDULED_TRIGGER")
+        try:
+            async with semaphore:
+                async with async_session() as session:
+                    service = WorkflowService(session, checkpointer)
+                    result = await service.start(
+                        model_id=model_id,
+                        champion_version=champion_version,
+                        trigger_type=trigger_type,
+                    )
+            return {
+                "model_id": model_id,
+                "status": "started",
+                "lifecycle_run_id": result.get("lifecycle_run_id"),
+            }
+        except Exception as exc:
+            return {
+                "model_id": model_id,
+                "status": "failed",
+                "error": str(exc),
+            }
+
+    results = await asyncio.gather(*(start_one(entry) for entry in body.models))
+    succeeded = sum(1 for item in results if item["status"] == "started")
+    failed = len(results) - succeeded
+
+    return _envelope(
+        request,
+        {
+            "total": len(body.models),
+            "succeeded": succeeded,
+            "failed": failed,
+            "results": results,
+        },
+        f"batch start completed: {succeeded}/{len(body.models)} succeeded",
+    )
+
+
+@router.get("")
+async def list_lifecycle_runs(
+    request: Request,
+    model_id: str | None = None,
+    current_phase: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出 lifecycle runs — 支持按 model_id / phase 过滤。
+
+    用于 50 模型并行管控：批量查看各模型当前阶段。
+    """
+    from sqlalchemy import text
+
+    where = ["1=1"]
+    params: dict = {"limit": limit, "offset": offset}
+
+    if model_id:
+        where.append("r.model_id = :mid")
+        params["mid"] = model_id
+    if current_phase:
+        where.append("r.current_phase = :phase")
+        params["phase"] = current_phase
+
+    result = await db.execute(
+        text(f"""
+            SELECT r.lifecycle_run_id, r.model_id, r.champion_version,
+                   r.current_phase, r.created_at, r.updated_at,
+                   r.state_json AS state
+            FROM workflow.model_lifecycle_runs r
+            WHERE {' AND '.join(where)}
+            ORDER BY r.created_at DESC
+            LIMIT :limit OFFSET :offset
+        """),
+        params,
+    )
+    rows = []
+    for r in result.mappings():
+        d = dict(r)
+        # 解析 checkpoint state
+        if d.get("state"):
+            try:
+                d["state"] = json.loads(d["state"]) if isinstance(d["state"], str) else d["state"]
+            except (json.JSONDecodeError, TypeError):
+                d["state"] = None
+        rows.append(d)
+
+    count_result = await db.execute(
+        text(f"""
+            SELECT COUNT(*) AS cnt FROM workflow.model_lifecycle_runs r
+            WHERE {' AND '.join(where)}
+        """),
+        {k: v for k, v in params.items() if k not in ("limit", "offset")},
+    )
+    total = count_result.scalar()
+
+    return _envelope(request, {"items": rows, "total": total})
