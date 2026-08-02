@@ -144,3 +144,118 @@ async def list_data_windows(
         request,
         {"model_id": model_id, "windows": [_window_to_contract(w) for w in windows]},
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T4-GAP-02: 灰度路由配置 API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class RoutingSwitchRequest(BaseModel):
+    """手动切换路由配置。"""
+    challenger_traffic_ratio: float = Field(ge=0.0, le=1.0, description="challenger 流量比例 0-1")
+    challenger_version_code: str | None = None
+    environment: str = "PROD"
+    updated_by: str = "admin"
+
+
+@router.get("/{model_id}/routing")
+async def get_model_routing(
+    model_id: str,
+    request: Request,
+    environment: str = "PROD",
+    db: AsyncSession = Depends(get_db),
+):
+    """T4-GAP-02: 查询模型当前路由配置 — 灰度发布核心查询。
+
+    返回 champion/challenger 版本和流量分配比例。
+    """
+    from ..repositories.iteration_repo import IterationRepo
+
+    repo = IterationRepo(db)
+    state = await repo.get_model_deployment_state(model_id, environment)
+
+    if not state:
+        return _envelope(request, {
+            "model_id": model_id,
+            "environment": environment,
+            "active_version_code": None,
+            "stable_version_code": None,
+            "challenger_version_code": None,
+            "challenger_traffic_ratio": 0.0,
+            "message": "尚未部署 — 无路由配置",
+        })
+
+    return _envelope(request, {
+        "model_id": model_id,
+        "environment": environment,
+        **{k: str(v) if not isinstance(v, (int, float, type(None))) else v
+           for k, v in state.items()},
+    })
+
+
+@router.post("/{model_id}/routing/switch")
+async def switch_model_routing(
+    model_id: str,
+    request: Request,
+    body: RoutingSwitchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """T4-GAP-02: 手动切换路由 — 灰度比例调整。
+
+    直接更新 model_deployment_state 的 challenger_traffic_ratio。
+    0.0 = 全部 champion，1.0 = 全部 challenger（晋升）。
+    """
+    from ..repositories.iteration_repo import IterationRepo
+
+    repo = IterationRepo(db)
+    current = await repo.get_model_deployment_state(model_id, body.environment)
+
+    active_version = current.get("active_version_code") if current else None
+    stable_version = current.get("stable_version_code") if current else active_version
+    challenger_version = (
+        body.challenger_version_code
+        or (current.get("challenger_version_code") if current else None)
+    )
+    ratio = body.challenger_traffic_ratio
+
+    if ratio >= 1.0 and challenger_version:
+        next_active = challenger_version
+        next_stable = active_version or stable_version
+        next_challenger = None
+        next_ratio = 0.0
+        action = "promoted_to_champion"
+    elif ratio <= 0.0:
+        next_active = stable_version or active_version
+        next_stable = stable_version or active_version
+        next_challenger = None
+        next_ratio = 0.0
+        action = "rolled_back_to_champion"
+    else:
+        next_active = active_version
+        next_stable = stable_version
+        next_challenger = challenger_version
+        next_ratio = ratio
+        action = f"traffic_ratio_set_to_{ratio}"
+
+    record = {
+        "model_id": model_id,
+        "environment": body.environment,
+        "active_version_code": next_active,
+        "stable_version_code": next_stable,
+        "challenger_version_code": next_challenger,
+        "challenger_traffic_ratio": next_ratio,
+        "state_version": (current.get("state_version", 0) + 1) if current else 1,
+        "updated_by": body.updated_by,
+    }
+
+    await repo.upsert_model_deployment_state(record)
+    await db.commit()
+
+    return _envelope(request, {
+        "model_id": model_id,
+        "action": action,
+        "active_version_code": next_active,
+        "stable_version_code": next_stable,
+        "challenger_version_code": next_challenger,
+        "challenger_traffic_ratio": next_ratio,
+    }, f"routing switched: {action}")

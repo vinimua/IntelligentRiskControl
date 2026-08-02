@@ -24,6 +24,7 @@ class TrainingJobInput(ContractModel):
 
     training_job_id: str
     idempotency_key: str
+    model_id: str = ""
     iteration_run_id: str
     training_plan_id: str
     experiment_id: str

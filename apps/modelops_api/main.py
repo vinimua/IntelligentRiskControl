@@ -24,6 +24,7 @@ from .routers import (
     dashboard,
     diagnosis,
     health,
+    inference,
     iteration,
     kg_calibration,
     knowledge,
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(iteration.router)
     app.include_router(iteration.internal_router)
     app.include_router(kg_calibration.router)
+    app.include_router(inference.router)
 
     return app
 

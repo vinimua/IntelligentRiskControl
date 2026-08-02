@@ -841,6 +841,58 @@ class IterationRepo:
             },
         )
 
+    # ── T4-GAP-01: 模型比对 ──
+
+    async def save_comparison_report(self, report) -> None:
+        """保存 ModelComparisonReport 到 external_execution_plans。"""
+        await self.session.execute(
+            text("""
+                INSERT INTO iteration.external_execution_plans
+                    (plan_type, plan_id, lifecycle_run_id, action, status, request_json, created_at)
+                VALUES ('MODEL_COMPARISON', :pid, :lrid, 'COMPARE_MODELS', 'SUCCEEDED', CAST(:req AS JSONB), NOW())
+                ON CONFLICT (plan_id) DO UPDATE SET request_json = CAST(:req AS JSONB), updated_at = NOW()
+            """),
+            {
+                "pid": report.comparison_id,
+                "lrid": report.lifecycle_run_id,
+                "req": json.dumps(report.model_dump(mode="json"), ensure_ascii=False),
+            },
+        )
+
+    async def get_comparison_report(self, comparison_id: str) -> dict | None:
+        """获取模型比对报告。"""
+        result = await self.session.execute(
+            text("SELECT * FROM iteration.external_execution_plans WHERE plan_id = :pid AND plan_type = 'MODEL_COMPARISON'"),
+            {"pid": comparison_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            return None
+        d = dict(row)
+        report = d.get("request_json")
+        if isinstance(report, str):
+            try:
+                report = json.loads(report)
+            except Exception:
+                report = None
+        if isinstance(report, dict):
+            return report
+        return d
+
+    # ── T4-GAP-03: 回滚事件查询 ──
+
+    async def get_rollback_events(self, deployment_id: str) -> list[dict]:
+        """获取部署的所有回滚事件（从 stage_records 中筛选 ROLLBACK 决策）。"""
+        result = await self.session.execute(
+            text("""
+                SELECT * FROM iteration.deployment_stage_records
+                WHERE deployment_id = :did AND decision = 'ROLLBACK'
+                ORDER BY created_at DESC
+            """),
+            {"did": deployment_id},
+        )
+        return [dict(r) for r in result.mappings()]
+
     # ── P3: 模型部署状态（routing config） ──
 
     async def get_model_deployment_state(self, model_id: str, environment: str = "PROD") -> dict | None:
@@ -981,3 +1033,58 @@ class IterationRepo:
                     "now": now,
                 },
             )
+
+    # ── T3-GAP-02: 超参优化 ──
+
+    async def save_tuning_plan(self, plan) -> None:
+        """保存 HyperparameterTuningPlan 到 external_execution_plans。"""
+        await self.session.execute(
+            text("""
+                INSERT INTO iteration.external_execution_plans
+                    (plan_type, plan_id, lifecycle_run_id, action, status, request_json, created_at)
+                VALUES ('HYPERPARAMETER_TUNING', :pid, :lrid, 'TUNE_HYPERPARAMS', 'PLANNED', CAST(:req AS JSONB), NOW())
+                ON CONFLICT (plan_id) DO UPDATE SET request_json = CAST(:req AS JSONB), updated_at = NOW()
+            """),
+            {
+                "pid": plan.plan_id,
+                "lrid": plan.lifecycle_run_id,
+                "req": json.dumps(plan.model_dump(mode="json") if hasattr(plan, "model_dump") else plan, ensure_ascii=False),
+            },
+        )
+
+    async def get_tuning_plan(self, plan_id: str) -> dict | None:
+        """获取超参搜索计划及结果。"""
+        result = await self.session.execute(
+            text("SELECT * FROM iteration.external_execution_plans WHERE plan_id = :pid AND plan_type = 'HYPERPARAMETER_TUNING'"),
+            {"pid": plan_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            return None
+        d = dict(row)
+        for field in ("request_json", "result_json"):
+            if d.get(field) and isinstance(d[field], str):
+                try: d[field] = json.loads(d[field])
+                except Exception: pass
+        return d
+
+    async def save_tuning_result(self, plan_id: str, result: dict) -> None:
+        """保存 Worker 回调结果（trial 结果 + best_params）。"""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        status = str(result.get("status", "FAILED")).upper()
+        await self.session.execute(
+            text("""
+                UPDATE iteration.external_execution_plans
+                SET status = :st, result_json = CAST(:res AS JSONB),
+                    completed_at = :now, updated_at = :now, error_message = :err
+                WHERE plan_id = :pid AND plan_type = 'HYPERPARAMETER_TUNING'
+            """),
+            {
+                "pid": plan_id,
+                "st": "SUCCEEDED" if status == "SUCCEEDED" else "FAILED",
+                "res": json.dumps(result, ensure_ascii=False),
+                "now": now,
+                "err": result.get("error_message"),
+            },
+        )

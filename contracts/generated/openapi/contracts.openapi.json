@@ -284,6 +284,108 @@
         }
       }
     },
+    "/api/models/{model_id}/routing": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Get Model Routing",
+        "description": "T4-GAP-02: 查询模型当前路由配置 — 灰度发布核心查询。\n\n返回 champion/challenger 版本和流量分配比例。",
+        "operationId": "get_model_routing_api_models__model_id__routing_get",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Id"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "PROD",
+              "title": "Environment"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/{model_id}/routing/switch": {
+      "post": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Switch Model Routing",
+        "description": "T4-GAP-02: 手动切换路由 — 灰度比例调整。\n\n直接更新 model_deployment_state 的 challenger_traffic_ratio。\n0.0 = 全部 champion，1.0 = 全部 challenger（晋升）。",
+        "operationId": "switch_model_routing_api_models__model_id__routing_switch_post",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutingSwitchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/lifecycle-runs": {
       "post": {
         "tags": [
@@ -1922,6 +2024,128 @@
         }
       }
     },
+    "/api/iteration/tuning-runs": {
+      "post": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Create Tuning Run",
+        "description": "Create a hyperparameter tuning run.",
+        "operationId": "create_tuning_run_api_iteration_tuning_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TuningTriggerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/tuning-runs/{plan_id}": {
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Get Tuning Run",
+        "description": "Get a hyperparameter tuning run and its result.",
+        "operationId": "get_tuning_run_api_iteration_tuning_runs__plan_id__get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/tuning-runs/{plan_id}/trials": {
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Get Tuning Trials",
+        "description": "Get all trial results for a tuning run.",
+        "operationId": "get_tuning_trials_api_iteration_tuning_runs__plan_id__trials_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/iteration/decisions/{proposal_id}/qualifications": {
       "post": {
         "tags": [
@@ -2211,6 +2435,305 @@
         }
       }
     },
+    "/api/iteration/deployments/batch/advance": {
+      "post": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Batch Advance Deployments",
+        "description": "Advance up to 50 deployment lifecycles.",
+        "operationId": "batch_advance_deployments_api_iteration_deployments_batch_advance_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchAdvanceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/deployments/batch/rollback": {
+      "post": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Batch Rollback Deployments",
+        "description": "Rollback up to 50 deployments.",
+        "operationId": "batch_rollback_deployments_api_iteration_deployments_batch_rollback_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchDeploymentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/comparisons": {
+      "post": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Create Comparison",
+        "description": "T4-GAP-01: champion vs challenger 10-metric comparison.",
+        "operationId": "create_comparison_api_iteration_comparisons_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComparisonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/comparisons/{comparison_id}": {
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Get Comparison",
+        "description": "Get a model comparison report.",
+        "operationId": "get_comparison_api_iteration_comparisons__comparison_id__get",
+        "parameters": [
+          {
+            "name": "comparison_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Comparison Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/deployments/{deployment_id}/health-checks": {
+      "post": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Create Health Check",
+        "description": "Run a structured health check for a deployment stage.",
+        "operationId": "create_health_check_api_iteration_deployments__deployment_id__health_checks_post",
+        "parameters": [
+          {
+            "name": "deployment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Deployment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/HealthCheckTriggerRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Get Health Checks",
+        "description": "Get all health check records for a deployment.",
+        "operationId": "get_health_checks_api_iteration_deployments__deployment_id__health_checks_get",
+        "parameters": [
+          {
+            "name": "deployment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Deployment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/deployments/{deployment_id}/rollback-events": {
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Get Rollback Events",
+        "description": "Get rollback events for a deployment.",
+        "operationId": "get_rollback_events_api_iteration_deployments__deployment_id__rollback_events_get",
+        "parameters": [
+          {
+            "name": "deployment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Deployment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/iteration/routing-configs/{model_id}": {
       "get": {
         "tags": [
@@ -2270,6 +2793,47 @@
         "summary": "Feature Reconstruction Callback",
         "description": "Worker 特征重构完成回调。",
         "operationId": "feature_reconstruction_callback_api_internal_iteration_features__plan_id__callback_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/internal/iteration/tuning-runs/{plan_id}/callback": {
+      "post": {
+        "tags": [
+          "iteration-internal"
+        ],
+        "summary": "Tuning Callback",
+        "description": "Worker callback for a completed hyperparameter tuning run.",
+        "operationId": "tuning_callback_api_internal_iteration_tuning_runs__plan_id__callback_post",
         "parameters": [
           {
             "name": "plan_id",
@@ -3218,6 +3782,152 @@
           }
         }
       }
+    },
+    "/api/inference/{model_id}/routing-state": {
+      "get": {
+        "tags": [
+          "inference"
+        ],
+        "summary": "Get Routing State",
+        "description": "查询模型当前路由配置 — 哪个版本接收多少流量。",
+        "operationId": "get_routing_state_api_inference__model_id__routing_state_get",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/inference/{model_id}/predict": {
+      "post": {
+        "tags": [
+          "inference"
+        ],
+        "summary": "Predict",
+        "description": "模拟预测 — 根据请求 ID 的稳定哈希分流到 champion 或 challenger。\n\n同一 request_id 始终路由到相同版本（确保用户体验一致）。",
+        "operationId": "predict_api_inference__model_id__predict_post",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PredictRequest",
+                "default": {
+                  "request_id": "",
+                  "features": {}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/inference/{model_id}/batch-predict": {
+      "post": {
+        "tags": [
+          "inference"
+        ],
+        "summary": "Batch Predict",
+        "description": "批量模拟预测 — 展示流量分流效果。\n\n发送 100 个请求，可以看到 challenger 实际分到的比例。",
+        "operationId": "batch_predict_api_inference__model_id__batch_predict_post",
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchPredictRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3238,6 +3948,75 @@
         },
         "type": "object",
         "title": "ApplyToNeo4jRequest"
+      },
+      "BatchAdvanceRequest": {
+        "properties": {
+          "deployment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Deployment Ids"
+          },
+          "updated_by": {
+            "type": "string",
+            "title": "Updated By",
+            "default": "admin"
+          },
+          "resume_lifecycle": {
+            "type": "boolean",
+            "title": "Resume Lifecycle",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "deployment_ids"
+        ],
+        "title": "BatchAdvanceRequest"
+      },
+      "BatchDeploymentRequest": {
+        "properties": {
+          "deployment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Deployment Ids"
+          },
+          "updated_by": {
+            "type": "string",
+            "title": "Updated By",
+            "default": "admin"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deployment_ids"
+        ],
+        "title": "BatchDeploymentRequest"
+      },
+      "BatchPredictRequest": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PredictRequest"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "BatchPredictRequest"
       },
       "BatchStartRequest": {
         "properties": {
@@ -3265,6 +4044,83 @@
           "models"
         ],
         "title": "BatchStartRequest"
+      },
+      "ComparisonRequest": {
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Model Id"
+          },
+          "champion_version": {
+            "type": "string",
+            "title": "Champion Version",
+            "default": "champion_v1"
+          },
+          "challenger_version": {
+            "type": "string",
+            "title": "Challenger Version",
+            "default": "challenger_v1"
+          },
+          "lifecycle_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle Run Id"
+          },
+          "qualification_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualification Run Id"
+          },
+          "champion_scores": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "maxItems": 100000,
+            "minItems": 1,
+            "title": "Champion Scores"
+          },
+          "challenger_scores": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "maxItems": 100000,
+            "minItems": 1,
+            "title": "Challenger Scores"
+          },
+          "labels": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "maxItems": 100000,
+            "minItems": 1,
+            "title": "Labels"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model_id",
+          "champion_scores",
+          "challenger_scores",
+          "labels"
+        ],
+        "title": "ComparisonRequest"
       },
       "DataEligibilityInput": {
         "properties": {
@@ -3713,6 +4569,43 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "HealthCheckTriggerRequest": {
+        "properties": {
+          "deployment_id": {
+            "type": "string",
+            "title": "Deployment Id",
+            "default": ""
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage",
+            "default": ""
+          },
+          "model_id": {
+            "type": "string",
+            "title": "Model Id",
+            "default": ""
+          },
+          "lifecycle_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle Run Id"
+          },
+          "health_metrics": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Health Metrics"
+          }
+        },
+        "type": "object",
+        "title": "HealthCheckTriggerRequest"
+      },
       "ManualReviewSubmission": {
         "properties": {
           "proposal_id": {
@@ -4032,6 +4925,26 @@
           "label_versions"
         ],
         "title": "PlanBuildRequest"
+      },
+      "PredictRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 0,
+            "title": "Request Id",
+            "description": "留空则自动生成",
+            "default": ""
+          },
+          "features": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Features",
+            "description": "特征字典"
+          }
+        },
+        "type": "object",
+        "title": "PredictRequest"
       },
       "QualificationRequest": {
         "properties": {
@@ -4463,6 +5376,44 @@
         ],
         "title": "RootCauseCandidate"
       },
+      "RoutingSwitchRequest": {
+        "properties": {
+          "challenger_traffic_ratio": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Challenger Traffic Ratio",
+            "description": "challenger 流量比例 0-1"
+          },
+          "challenger_version_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challenger Version Code"
+          },
+          "environment": {
+            "type": "string",
+            "title": "Environment",
+            "default": "PROD"
+          },
+          "updated_by": {
+            "type": "string",
+            "title": "Updated By",
+            "default": "admin"
+          }
+        },
+        "type": "object",
+        "required": [
+          "challenger_traffic_ratio"
+        ],
+        "title": "RoutingSwitchRequest",
+        "description": "手动切换路由配置。"
+      },
       "RunDetailedMonitoringRequest": {
         "properties": {
           "model_id": {
@@ -4803,6 +5754,11 @@
             "type": "string",
             "title": "Idempotency Key"
           },
+          "model_id": {
+            "type": "string",
+            "title": "Model Id",
+            "default": ""
+          },
           "iteration_run_id": {
             "type": "string",
             "title": "Iteration Run Id"
@@ -4998,6 +5954,55 @@
           "monitoring_run_id"
         ],
         "title": "TriggerDiagnosisRequest"
+      },
+      "TuningTriggerRequest": {
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Model Id"
+          },
+          "lifecycle_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle Run Id"
+          },
+          "training_plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Plan Id"
+          },
+          "algorithm": {
+            "type": "string",
+            "title": "Algorithm",
+            "default": "lightgbm"
+          },
+          "num_trials": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 2.0,
+            "title": "Num Trials",
+            "default": 5
+          }
+        },
+        "type": "object",
+        "required": [
+          "model_id"
+        ],
+        "title": "TuningTriggerRequest"
       },
       "ValidationError": {
         "properties": {

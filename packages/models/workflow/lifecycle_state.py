@@ -63,6 +63,11 @@ class ModelLifecycleState(ContractModel):
     feature_transform_count: int | None = None
     transform_artifact_uri: str | None = None
     training_plan_id: str | None = None
+    hyperparameter_tuning_plan_id: str | None = None
+    tuning_dispatched: bool | None = None
+    tuning_completed: bool | None = None
+    best_hyperparameters: dict | None = None
+    best_tuning_metric: float | None = None
     challenger_version: str | None = None
     challenger_qualified: bool | None = None
     qualification_run_id: str | None = None

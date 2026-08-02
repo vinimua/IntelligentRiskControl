@@ -7,6 +7,7 @@ import Sidebar from "./components/sidebar";
 import DashboardOverview from "./components/dashboard-overview";
 import DeploymentPanel from "./components/deployment-panel";
 import DeploymentKgDecisionPanel from "./components/deployment-kg-decision-panel";
+import TaskFourPanel from "./components/task-four-panel";
 import KgCalibrationPanel from "./kg-calibration-panel";
 import { requestJson, Panel, StatTile, StatusDot, Badge, formatValue, Btn, Spinner, Empty } from "./components/shared";
 
@@ -199,6 +200,7 @@ export default function Page() {
 
       {activeNav==="overview" && <DashboardOverview apiBase={apiBase} onNav={setActiveNav} />}
       {activeNav==="deployment" && <DeploymentPanel apiBase={apiBase} />}
+      {activeNav==="task4" && <TaskFourPanel apiBase={apiBase} initialModelId={modelId} />}
       {activeNav==="kg" && <KgCalibrationPanel apiBase={apiBase} />}
 
       {activeNav==="workflow" && (

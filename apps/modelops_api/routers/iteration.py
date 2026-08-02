@@ -529,6 +529,126 @@ async def feature_reconstruction_callback(
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# T3-GAP-02: 超参优化 API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TuningTriggerRequest(BaseModel):
+    model_id: str = Field(min_length=1, max_length=100)
+    lifecycle_run_id: str | None = None
+    training_plan_id: str | None = None
+    algorithm: str = "lightgbm"
+    num_trials: int = Field(default=5, ge=2, le=20)
+
+
+@router.post("/tuning-runs")
+async def create_tuning_run(
+    request: Request,
+    body: TuningTriggerRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a hyperparameter tuning run."""
+    from ..services.iteration.hyperparameter_tuning_service import HyperparameterTuningService
+
+    svc = HyperparameterTuningService()
+    plan = svc.build_plan(
+        model_id=body.model_id,
+        lifecycle_run_id=body.lifecycle_run_id,
+        training_plan_id=body.training_plan_id,
+        algorithm=body.algorithm,
+        num_trials=body.num_trials,
+    )
+    await IterationRepo(db).save_tuning_plan(plan)
+    await db.commit()
+    return _envelope(request, plan.model_dump(mode="json"), f"tuning run created: {plan.plan_id}")
+
+
+@router.get("/tuning-runs/{plan_id}")
+async def get_tuning_run(
+    plan_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a hyperparameter tuning run and its result."""
+    repo = IterationRepo(db)
+    plan = await repo.get_tuning_plan(plan_id)
+    if plan is None:
+        raise NotFoundError("tuning run not found")
+    return _envelope(request, plan)
+
+
+@router.get("/tuning-runs/{plan_id}/trials")
+async def get_tuning_trials(
+    plan_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all trial results for a tuning run."""
+    repo = IterationRepo(db)
+    plan = await repo.get_tuning_plan(plan_id)
+    if plan is None:
+        raise NotFoundError("tuning run not found")
+    request_json = plan.get("request_json") if isinstance(plan.get("request_json"), dict) else {}
+    result_json = plan.get("result_json") if isinstance(plan.get("result_json"), dict) else {}
+    return _envelope(request, {
+        "plan_id": plan_id,
+        "status": plan.get("status"),
+        "trials": result_json.get("trials", request_json.get("trials", [])),
+        "best_trial_index": result_json.get("best_trial_index"),
+        "best_hyperparameters": result_json.get("best_hyperparameters"),
+        "best_val_auc": result_json.get("best_val_auc"),
+    })
+
+
+@internal_router.post("/tuning-runs/{plan_id}/callback")
+async def tuning_callback(
+    plan_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Worker callback for a completed hyperparameter tuning run."""
+    body = await request.json()
+    repo = IterationRepo(db)
+    await repo.save_tuning_result(plan_id, body)
+    await db.commit()
+
+    lifecycle_resumed = False
+    lifecycle_run_id = body.get("lifecycle_run_id")
+    if lifecycle_run_id and str(body.get("status", "")).upper() == "SUCCEEDED":
+        try:
+            from ..services.workflow.checkpointer_manager import get_checkpointer
+            from ..services.workflow.workflow_service import WorkflowService
+
+            service = WorkflowService(db, get_checkpointer())
+            await service.resume(
+                str(lifecycle_run_id),
+                decision="approved",
+                resume_payload={
+                    "decision": "approved",
+                    "resume_type": "TUNING_COMPLETE",
+                    "hyperparameter_tuning_plan_id": plan_id,
+                    "status": body.get("status"),
+                    "best_hyperparameters": body.get("best_hyperparameters", {}),
+                    "best_val_auc": body.get("best_val_auc"),
+                    "trials": body.get("trials", []),
+                },
+            )
+            lifecycle_resumed = True
+        except Exception:
+            logger.warning(
+                "tuning_callback_auto_resume_failed",
+                plan_id=plan_id,
+                lifecycle_run_id=lifecycle_run_id,
+                exc_info=True,
+            )
+
+    return _envelope(
+        request,
+        {"plan_id": plan_id, "status": body.get("status"), "lifecycle_resumed": lifecycle_resumed},
+        "tuning callback recorded",
+    )
+
+
 @router.post("/decisions/{proposal_id}/qualifications")
 async def evaluate_qualification(
     proposal_id: str,
@@ -946,6 +1066,272 @@ async def rollback_deployment(
     )
     await db.commit()
     return _envelope(request, result, "deployment rolled back")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T4-GAP-06: 50 模型批量部署管控
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BatchDeploymentRequest(BaseModel):
+    deployment_ids: list[str] = Field(min_length=1, max_length=50)
+    updated_by: str = "admin"
+
+
+class BatchAdvanceRequest(BatchDeploymentRequest):
+    resume_lifecycle: bool = True
+
+
+@router.post("/deployments/batch/advance")
+async def batch_advance_deployments(
+    request: Request,
+    body: BatchAdvanceRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Advance up to 50 deployment lifecycles."""
+    from ..services.workflow.checkpointer_manager import get_checkpointer
+    from ..services.workflow.workflow_service import WorkflowService
+
+    repo = IterationRepo(db)
+    checkpointer = get_checkpointer()
+    results: list[dict] = []
+    succeeded = 0
+    failed = 0
+
+    for did in body.deployment_ids:
+        try:
+            deployment = await repo.get_deployment(did)
+            if not deployment:
+                results.append({"deployment_id": did, "status": "failed", "error": "not_found"})
+                failed += 1
+                continue
+
+            previous_stage = deployment.get("current_stage")
+            lrid = deployment.get("lifecycle_run_id")
+            if not lrid:
+                results.append({"deployment_id": did, "status": "failed", "error": "no_lifecycle_run"})
+                failed += 1
+                continue
+
+            if body.resume_lifecycle:
+                service = WorkflowService(db, checkpointer)
+                await service.resume(
+                    str(lrid),
+                    decision="approved",
+                    resume_payload={"decision": "approved", "resume_type": "BATCH_ADVANCE"},
+                )
+
+            refreshed = await repo.get_deployment(did) or deployment
+            results.append({
+                "deployment_id": did,
+                "status": "advanced",
+                "model_id": refreshed.get("model_id"),
+                "previous_stage": previous_stage,
+                "stage": refreshed.get("current_stage"),
+            })
+            succeeded += 1
+        except Exception as exc:
+            results.append({"deployment_id": did, "status": "failed", "error": str(exc)})
+            failed += 1
+
+    return _envelope(request, {
+        "total": len(body.deployment_ids),
+        "succeeded": succeeded,
+        "failed": failed,
+        "results": results,
+    }, f"batch advance: {succeeded}/{len(body.deployment_ids)} succeeded")
+
+
+@router.post("/deployments/batch/rollback")
+async def batch_rollback_deployments(
+    request: Request,
+    body: BatchDeploymentRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Rollback up to 50 deployments."""
+    from ..services.iteration.deployment_safety_service import DeploymentSafetyService
+
+    repo = IterationRepo(db)
+    results: list[dict] = []
+    succeeded = 0
+    failed = 0
+
+    for did in body.deployment_ids:
+        try:
+            deployment = await repo.get_deployment(did)
+            if not deployment:
+                results.append({"deployment_id": did, "status": "failed", "error": "not_found"})
+                failed += 1
+                continue
+
+            svc = DeploymentSafetyService(db)
+            result = await svc.rollback(
+                deployment=deployment,
+                reason=f"BATCH_ROLLBACK by {body.updated_by}",
+                updated_by=body.updated_by,
+            )
+            results.append({
+                "deployment_id": did,
+                "status": "rolled_back",
+                "model_id": deployment.get("model_id"),
+                "rollback_target": result.get("rollback_target"),
+            })
+            succeeded += 1
+        except Exception as exc:
+            results.append({"deployment_id": did, "status": "failed", "error": str(exc)})
+            failed += 1
+
+    await db.commit()
+    return _envelope(request, {
+        "total": len(body.deployment_ids),
+        "succeeded": succeeded,
+        "failed": failed,
+        "results": results,
+    }, f"batch rollback: {succeeded}/{len(body.deployment_ids)} succeeded")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T4-GAP-01: 模型比对 API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ComparisonRequest(BaseModel):
+    model_id: str = Field(min_length=1, max_length=100)
+    champion_version: str = Field(default="champion_v1")
+    challenger_version: str = Field(default="challenger_v1")
+    lifecycle_run_id: str | None = None
+    qualification_run_id: str | None = None
+    champion_scores: list[float] = Field(min_length=1, max_length=100000)
+    challenger_scores: list[float] = Field(min_length=1, max_length=100000)
+    labels: list[int] = Field(min_length=1, max_length=100000)
+
+
+@router.post("/comparisons")
+async def create_comparison(
+    request: Request,
+    body: ComparisonRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """T4-GAP-01: champion vs challenger 10-metric comparison."""
+    import numpy as np
+    from ..services.iteration.model_comparison_service import ModelComparisonService
+
+    if len(body.champion_scores) != len(body.challenger_scores) or len(body.champion_scores) != len(body.labels):
+        raise ValidationAppError("INVALID_INPUT", "scores and labels must have same length")
+
+    svc = ModelComparisonService()
+    report = svc.compare(
+        y_true=np.array(body.labels),
+        champion_scores=np.array(body.champion_scores),
+        challenger_scores=np.array(body.challenger_scores),
+        model_id=body.model_id,
+        champion_version=body.champion_version,
+        challenger_version=body.challenger_version,
+        lifecycle_run_id=body.lifecycle_run_id,
+        qualification_run_id=body.qualification_run_id,
+    )
+
+    await IterationRepo(db).save_comparison_report(report)
+    await db.commit()
+
+    return _envelope(request, report.model_dump(mode="json"), "comparison completed")
+
+
+@router.get("/comparisons/{comparison_id}")
+async def get_comparison(
+    comparison_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a model comparison report."""
+    report = await IterationRepo(db).get_comparison_report(comparison_id)
+    if report is None:
+        raise NotFoundError("comparison report not found")
+    return _envelope(request, report)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# T4-GAP-04: 部署健康检查 API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class HealthCheckTriggerRequest(BaseModel):
+    deployment_id: str = ""
+    stage: str = ""
+    model_id: str = ""
+    lifecycle_run_id: str | None = None
+    health_metrics: dict = Field(default_factory=dict)
+
+
+@router.post("/deployments/{deployment_id}/health-checks")
+async def create_health_check(
+    deployment_id: str,
+    request: Request,
+    body: HealthCheckTriggerRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Run a structured health check for a deployment stage."""
+    from ..services.deployment.deployment_health_check_service import DeploymentHealthCheckService
+
+    repo = IterationRepo(db)
+    deployment = await repo.get_deployment(deployment_id)
+    if deployment is None:
+        raise NotFoundError("deployment not found")
+
+    b = body or HealthCheckTriggerRequest(deployment_id=deployment_id, stage=deployment.get("current_stage", ""))
+    report = await DeploymentHealthCheckService().check(
+        deployment_id=deployment_id,
+        stage=b.stage or deployment.get("current_stage", ""),
+        health_metrics=b.health_metrics,
+        lifecycle_run_id=b.lifecycle_run_id,
+        model_id=b.model_id or (deployment.get("model_id") or ""),
+    )
+
+    await repo.save_deployment_stage_record({
+        "deployment_id": deployment_id,
+        "stage": report.stage,
+        "decision": "HEALTH_CHECK",
+        "status": "SUCCEEDED",
+        "health_json": report.model_dump(mode="json"),
+        "result_json": {"report_id": report.report_id, "passed": report.passed},
+    })
+    await db.commit()
+
+    return _envelope(request, report.model_dump(mode="json"), "health check completed")
+
+
+@router.get("/deployments/{deployment_id}/health-checks")
+async def get_health_checks(
+    deployment_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all health check records for a deployment."""
+    repo = IterationRepo(db)
+    deployment = await repo.get_deployment(deployment_id)
+    if deployment is None:
+        raise NotFoundError("deployment not found")
+    stages = await repo.get_deployment_stages(deployment_id)
+    health_checks = [s for s in stages if s.get("decision") == "HEALTH_CHECK"]
+    return _envelope(request, {"deployment_id": deployment_id, "health_checks": health_checks})
+
+
+@router.get("/deployments/{deployment_id}/rollback-events")
+async def get_rollback_events(
+    deployment_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get rollback events for a deployment."""
+    repo = IterationRepo(db)
+    deployment = await repo.get_deployment(deployment_id)
+    if deployment is None:
+        raise NotFoundError("deployment not found")
+    events = await repo.get_rollback_events(deployment_id)
+    return _envelope(request, {
+        "deployment_id": deployment_id,
+        "model_id": deployment.get("model_id"),
+        "champion_version": deployment.get("champion_version"),
+        "rollback_count": len(events),
+        "events": events,
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

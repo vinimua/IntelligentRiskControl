@@ -270,7 +270,13 @@ def _save_to_minio(model_bytes: bytes, bucket: str, object_path: str):
         return f"s3://{bucket}/{object_path}"
     except Exception as exc:
         logger.error("minio_save_failed err=%s", exc)
-        return f"s3://{bucket}/{object_path}"
+        from pathlib import Path
+
+        local_path = Path("artifacts") / "minio_fallback" / bucket / object_path
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(model_bytes)
+        logger.info("model_saved_to_local_fallback path=%s", local_path)
+        return local_path.resolve().as_uri()
 
 
 def _track_mlflow(experiment_name: str, metrics: dict, model_path: str):

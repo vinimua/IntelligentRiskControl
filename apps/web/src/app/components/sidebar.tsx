@@ -5,6 +5,7 @@ const NAV_ITEMS = [
     { key: "overview", icon: "◈", label: "总览" },
     { key: "workflow", icon: "◎", label: "流程控制" },
     { key: "deployment", icon: "⬡", label: "部署监控" },
+    { key: "task4", icon: "▣", label: "任务四" },
   ]},
   { section: "观测", items: [
     { key: "monitoring", icon: "◉", label: "监控看板" },

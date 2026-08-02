@@ -46,6 +46,7 @@ app.conf.imports = (
     "workers.executor_tasks",
     "workers.kg_tasks",
     "workers.feature_tasks",
+    "workers.tuning_tasks",
 )
 
 
