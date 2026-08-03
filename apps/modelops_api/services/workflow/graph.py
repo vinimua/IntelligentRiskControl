@@ -44,7 +44,7 @@ logger = structlog.get_logger(__name__)
 
 # ── Mock 行为 ──
 MOCK_NEED_ITERATION: bool | None = True
-MOCK_CHALLENGER_QUALIFIED: bool = True
+MOCK_CHALLENGER_QUALIFIED: bool = False
 MOCK_DEPLOYMENT_DECISION: str = "PROMOTE"
 MAX_BUSINESS_ROUNDS: int = 3
 
@@ -1006,8 +1006,8 @@ async def feature_reconstruction_node(state: ModelLifecycleState) -> dict:
                     except Exception:
                         pass
                 feature_snapshot_id = str(uuid.uuid4())
-                logger.info(
-                    "feature_recon_demo_executed",
+                logger.warning(
+                    "RISK: feature_reconstruction_using_demo_fallback_not_real_worker — 未派发 Celery Worker，特征重构走内联 Demo",
                     plan_id=plan.plan_id,
                     schema=feature_schema_version,
                     snapshot=feature_snapshot_id,
@@ -1015,15 +1015,18 @@ async def feature_reconstruction_node(state: ModelLifecycleState) -> dict:
         except Exception:
             logger.warning("feature_recon_demo_failed", exc_info=True)
 
-    return {
+    result: dict = {
         "feature_reconstruction_plan_id": plan.plan_id,
         "feature_reconstruction_status": "SUCCEEDED" if plan.transforms else "SKIPPED_NO_TRANSFORMS",
-        "feature_reconstruction_dispatched": False,
+        "feature_reconstruction_dispatched": worker_dispatched,
         "feature_schema_version": feature_schema_version,
         "feature_snapshot_id": feature_snapshot_id,
         "feature_transform_count": len(plan.transforms),
         "current_phase": LifecyclePhase.ITERATING.value,
     }
+    if not worker_dispatched and plan.transforms:
+        result["warnings"] = ["特征重构未派发 Celery Worker，使用内联 Demo 执行（数据未保存到 MinIO）"]
+    return result
 
 
 async def wait_feature_reconstruction_node(state: ModelLifecycleState) -> dict:
@@ -1296,7 +1299,10 @@ async def hyperparameter_tuning_node(state: ModelLifecycleState) -> dict:
     if not worker_dispatched:
         from ...services.iteration.hyperparameter_tuning_service import _DEFAULT_PARAMS
         best_params = _DEFAULT_PARAMS.get(algorithm, _DEFAULT_PARAMS["lightgbm"])
-        logger.info("tuning_demo_fallback", algorithm=algorithm)
+        logger.warning(
+            "RISK: hyperparameter_tuning_using_demo_fallback_not_real_worker — 未派发 Celery Worker，超参优化走默认参数",
+            algorithm=algorithm,
+        )
 
         # 持久化 tuning plan
         try:
@@ -1319,6 +1325,7 @@ async def hyperparameter_tuning_node(state: ModelLifecycleState) -> dict:
             "best_tuning_metric": 0.78,
             "tuning_completed": True,
             "tuning_dispatched": False,
+            "warnings": ["超参优化未派发 Celery Worker，使用默认参数（未执行真实搜索）"],
         }
 
     # Celery 模式：等待 Worker 回调
@@ -1441,19 +1448,26 @@ async def training_job_dispatch_node(state: ModelLifecycleState) -> dict:
                 business_round=business_round,
             )
 
-            return {
+            result = {
                 "training_job_id": training_job_id,
                 "training_dispatched": dispatch_result["dispatched"],
                 "training_dispatch_mode": "celery" if dispatch_result["dispatched"] else "manual_callback",
                 "current_phase": LifecyclePhase.WAITING_TRAINING_CALLBACK.value,
             }
+            if not dispatch_result["dispatched"]:
+                result["warnings"] = ["训练任务未派发到 Celery Worker，需前端手动提交训练回调（模拟数据）"]
+            return result
     except (OSError, ConnectionError, TimeoutError, _DBIntegrityError):
-        logger.warning("training_job_dispatch_fallback", exc_info=True)
+        logger.warning(
+            "RISK: training_job_dispatch_using_manual_callback_fallback — 数据库不可用或 Celery 未启动，训练任务未派发，需前端手动提交训练回调",
+            exc_info=True,
+        )
         return {
             "training_job_id": training_job_id,
             "training_dispatched": False,
             "training_dispatch_mode": "fallback_manual_callback",
             "current_phase": LifecyclePhase.WAITING_TRAINING_CALLBACK.value,
+            "warnings": ["数据库不可用或 Celery 未启动，训练任务未派发——后续验证指标均为模拟数据"],
         }
 
 
@@ -1632,7 +1646,11 @@ async def qualification_node(state: ModelLifecycleState) -> dict:
                 ),
             }
     except (OSError, ConnectionError, TimeoutError, _DBIntegrityError):
-        logger.warning("qualification_fallback", exc_info=True)
+        logger.warning(
+            "RISK: qualification_using_mock_result — 数据库不可用，使用 MOCK_CHALLENGER_QUALIFIED=%s 作为资格验证结果",
+            MOCK_CHALLENGER_QUALIFIED,
+            exc_info=True,
+        )
         qualified = MOCK_CHALLENGER_QUALIFIED
         return {
             "qualification_run_id": str(uuid.uuid4()),
@@ -1642,6 +1660,7 @@ async def qualification_node(state: ModelLifecycleState) -> dict:
                 if qualified
                 else LifecyclePhase.OFFLINE_VALIDATING.value
             ),
+            "warnings": ["数据库不可用，资格验证使用 MOCK 结果——challenger_qualified 非真实七道 Gate 计算"],
         }
 
 
@@ -2161,6 +2180,7 @@ async def iteration_subgraph(state: ModelLifecycleState) -> dict:
     """Mock：Legacy 任务三子图。P1+ 被 TrainingPlan → TrainingJob 替代。"""
     run_id = str(uuid.uuid4())
     if MOCK_CHALLENGER_QUALIFIED:
+        logger.warning("legacy_iteration_subgraph_using_mock_qualification")
         return {
             "iteration_run_id": run_id,
             "challenger_version": f"{_g(state, 'champion_version')}_challenger_v1",

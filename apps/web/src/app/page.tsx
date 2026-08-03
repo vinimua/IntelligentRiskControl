@@ -206,6 +206,19 @@ export default function Page() {
       {activeNav==="workflow" && (
         <div className="space-y-5 p-5">
           <div><p className="text-[11px] font-semibold uppercase tracking-[.16em] text-indigo-600">流程控制</p><h1 className="text-2xl font-bold tracking-tight text-slate-900 mt-1">生命周期管理</h1></div>
+          {(Array.isArray(state.warnings) && (state.warnings as string[]).length > 0) && (
+            <div className="rounded-xl border-2 border-amber-300 bg-amber-50 p-4 shadow-lg animate-fade-up">
+              <div className="flex items-start gap-3">
+                <span className="text-2xl">&#9888;</span>
+                <div className="flex-1">
+                  <div className="text-sm font-bold text-amber-800 mb-2">Risk 告警 — 以下数据为模拟值，非真实计算</div>
+                  {(state.warnings as string[]).map((w: string, i: number) => (
+                    <div key={i} className="text-xs text-amber-700 font-mono bg-amber-100 rounded px-2 py-1 mb-1">{w}</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
           <div className="grid gap-5 lg:grid-cols-[380px_1fr]">
             {/* Left column */}
             <div className="space-y-4">

@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     skip_integration: bool = False
 
     # ── Workflow / Demo ──
-    workflow_demo_mode: bool = True
+    workflow_demo_mode: bool = False
     workflow_use_celery: bool = True
     workflow_checkpointer: str = "postgres"  # "memory" | "postgres"
 
