@@ -8,7 +8,6 @@ from packages.models.common.enums import (
     TrainingPlanStatus,
 )
 from packages.models.iteration.decision_proposal import DecisionProposal
-from packages.models.iteration.data_eligibility import DataEligibilityResult
 from packages.models.iteration.risk_assessment import RiskAssessment
 from packages.models.iteration.training_plan import TrainingPlan, TrainingWindowSpec
 
@@ -30,7 +29,6 @@ class TrainingPlanBuilder:
         feature_schema_version: str | None = None,
         preprocessing_version: str | None = None,
         business_round: int = 1,
-        data_eligibility_assessments: list[tuple[str, DataEligibilityResult]] | None = None,
         data_snapshot_ids: list[str] | None = None,
         label_versions: list[str] | None = None,
     ) -> TrainingPlan:
@@ -42,20 +40,7 @@ class TrainingPlanBuilder:
             raise ValueError("approval_id is required")
         if not proposal.strategies:
             raise ValueError("approved model iteration has no selected strategy")
-        data_eligibility_assessments = data_eligibility_assessments or []
         data_snapshot_ids = data_snapshot_ids or []
-        if not data_eligibility_assessments:
-            raise ValueError("at least one data eligibility assessment is required")
-        blocked = [
-            assessment_id
-            for assessment_id, result in data_eligibility_assessments
-            if not result.supervised_training_allowed
-        ]
-        if blocked:
-            raise ValueError(
-                "supervised training blocked by data eligibility assessments: "
-                + ",".join(blocked)
-            )
         strategy = proposal.strategies[0]
         strategy_params = strategy.parameters or {}
         resolved_label_versions = (
@@ -95,10 +80,6 @@ class TrainingPlanBuilder:
             strategy_parameters=strategy.parameters,
             target_metric_codes=proposal.target_metric_codes,
             windows=windows,
-            data_eligibility_assessment_ids=[
-                assessment_id
-                for assessment_id, _ in data_eligibility_assessments
-            ],
             data_snapshot_ids=data_snapshot_ids,
             label_versions=resolved_label_versions,
             sample_weight_policy=strategy_params.get("sample_weight_policy", {}),

@@ -41,7 +41,7 @@ class TrainingPlan(ContractModel):
     strategy_parameters: dict = Field(default_factory=dict)
     target_metric_codes: list[str] = Field(default_factory=list)
     windows: TrainingWindowSpec = Field(default_factory=TrainingWindowSpec)
-    data_eligibility_assessment_ids: list[str] = Field(min_length=1)
+    data_eligibility_assessment_ids: list[str] = Field(default_factory=list)
     data_snapshot_ids: list[str] = Field(min_length=1)
     label_versions: list[str] = Field(min_length=1)
     sample_weight_policy: dict = Field(default_factory=dict)

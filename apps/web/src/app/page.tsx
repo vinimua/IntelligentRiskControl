@@ -51,6 +51,8 @@ type DeploymentStageRecord = {
   created_at?: string;
 };
 type DeploymentStagesResponse = { deployment_id: string; stages: DeploymentStageRecord[] };
+type FeatureTransformItem = { operation: string; source_feature: string; target_feature?: string | null; reason: string; parameters?: Record<string,unknown> };
+type FeatureReconstructionPlan = { plan_id: string; target_schema_version: string; transforms: FeatureTransformItem[]; expected_feature_count_before: number; expected_feature_count_after: number };
 type DecisionProposalDetail = {
   proposal_id?: string;
   primary_root_cause_code?: string;
@@ -135,6 +137,7 @@ export default function Page() {
   const [lifecycleRun, setLifecycleRun] = useState<LifecycleRun|null>(null);
   const [trainingPlan, setTrainingPlan] = useState<TrainingPlanDetail|null>(null);
   const [deploymentStageRecords, setDeploymentStageRecords] = useState<DeploymentStageRecord[]>([]);
+  const [featureReconPlan, setFeatureReconPlan] = useState<FeatureReconstructionPlan | null>(null);
 
   const state = useMemo(() => lifecycleRun?.state??{}, [lifecycleRun]);
   const currentRunId = runId || lifecycleRun?.lifecycle_run_id || "";
@@ -158,6 +161,7 @@ export default function Page() {
   useEffect(()=>{if(!autoRefresh||!currentRunId||isTerminal)return;const t=setInterval(()=>{loadLifecycleRun(currentRunId,false);},3000);return()=>clearInterval(t);},[autoRefresh,currentRunId,isTerminal]);
   useEffect(()=>{if(!currentTrainingPlanId){setTrainingPlan(null);return;}let c=false;(async()=>{try{const d=await requestJson<TrainingPlanDetail>(apiBase,`/api/iteration/plans/${currentTrainingPlanId}`);if(!c)setTrainingPlan(d);}catch{if(!c)setTrainingPlan(null);}})();return()=>{c=true;};},[apiBase,currentTrainingPlanId]);
   useEffect(()=>{const deploymentId=String(state.deployment_id||"");if(!deploymentId){setDeploymentStageRecords([]);return;}let c=false;(async()=>{try{const d=await requestJson<DeploymentStagesResponse>(apiBase,`/api/iteration/deployments/${deploymentId}/stages`);if(!c)setDeploymentStageRecords(d.stages??[]);}catch{if(!c)setDeploymentStageRecords([]);}})();return()=>{c=true;};},[apiBase,state.deployment_id]);
+  useEffect(()=>{const planId=String(state.feature_reconstruction_plan_id||"");if(!planId){setFeatureReconPlan(null);return;}let c=false;(async()=>{try{const d=await requestJson<FeatureReconstructionPlan>(apiBase,`/api/iteration/features/reconstruction-plans/${planId}`);if(!c)setFeatureReconPlan(d);}catch{if(!c)setFeatureReconPlan(null);}})();return()=>{c=true;};},[apiBase,state.feature_reconstruction_plan_id]);
 
   // ── Handlers (unchanged) ──
   async function runAction<T>(key:string,action:()=>Promise<T>,ok:string,show=true){setBusy(key);if(show)setMessage(null);try{const r=await action();if(show)setMessage({type:"ok",text:ok});return r;}catch(e){setMessage({type:"error",text:e instanceof Error?e.message:"请求失败"});return null;}finally{setBusy(null);}}
@@ -211,7 +215,7 @@ export default function Page() {
               <div className="flex items-start gap-3">
                 <span className="text-2xl">&#9888;</span>
                 <div className="flex-1">
-                  <div className="text-sm font-bold text-amber-800 mb-2">Risk 告警 — 以下数据为模拟值，非真实计算</div>
+                  <div className="text-sm font-bold text-amber-800 mb-2">流程告警 — 以下事项需要关注，可能影响迭代质量</div>
                   {(state.warnings as string[]).map((w: string, i: number) => (
                     <div key={i} className="text-xs text-amber-700 font-mono bg-amber-100 rounded px-2 py-1 mb-1">{w}</div>
                   ))}
@@ -310,6 +314,10 @@ export default function Page() {
                 </div>
                 {currentTrainingPlanId && <TrainingPlanDetail plan={trainingPlan} id={currentTrainingPlanId} />}
               </Panel>
+
+              {featureReconPlan && featureReconPlan.transforms.length > 0 && (
+                <FeatureReconstructionView plan={featureReconPlan} />
+              )}
             </div>
           </div>
         </div>
@@ -514,5 +522,72 @@ function KgDecisionCardV2({state,proposalId,apiBase}:{state:Record<string,unknow
 }
 
 function KgDecisionCard({state,proposalId}:{state:Record<string,unknown>;proposalId?:string}){const reasons: string[]=Array.isArray(state.decision_reasons)?state.decision_reasons as string[]:[];const strategy=(state.selected_strategy_code??"")as string;const kgStrategy=reasons.find(r=>r.startsWith("KG_STRATEGY:"))?.replace("KG_STRATEGY:","")??"";const kgEffectiveness=reasons.find(r=>r.startsWith("HISTORICAL_EFFECTIVENESS:"))?.replace("HISTORICAL_EFFECTIVENESS:","")??"";const kgCases=reasons.find(r=>r.startsWith("SUPPORT_CASES:"))?.replace("SUPPORT_CASES:","")??"";const kgRelation=reasons.find(r=>r.startsWith("RELATION:"))?.replace("RELATION:","")??"";const kgDegraded=reasons.includes("KG_RETRIEVAL_DEGRADED");const isYamlFallback=reasons.some(r=>r.startsWith("ROOT_CAUSE_RULE_MATCHED:"));const hasKG=Boolean(kgStrategy);const autoPassed=!state.requires_manual_review&&hasKG;return(<div className="dash-card"><div className="dash-card-header flex items-center justify-between">KG Strategy Decision{proposalId?<a href={`${DEFAULT_API_BASE}/api/iteration/decisions/${proposalId}`} target="_blank" className="text-xs text-indigo-500 hover:underline">Proposal</a>:null}</div><div className="dash-card-body">{isYamlFallback?<div className="rounded-lg bg-slate-50 border border-slate-100 p-3 text-xs text-slate-600">YAML 规则匹配 (无 KG 命中)<br/>策略: {strategy||"—"}</div>:kgDegraded?<div className="rounded-lg bg-amber-50 border border-amber-100 p-3 text-xs text-amber-700">KG 检索降级 — Neo4j 不可用，需人工复核</div>:hasKG?<div className="space-y-2"><div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3"><div className="text-[10px] text-indigo-400 font-mono mb-1">MATCH (rc)→[:RECOMMENDS]→(s)→[:MITIGATES]→(rc)</div><div className="text-xs text-indigo-600 font-mono">RootCause: {kgRelation.split("|")[0]||"?"}</div><div className="grid grid-cols-2 gap-2 mt-2">{[["Strategy",kgStrategy],["Effectiveness",kgEffectiveness?String(Number(kgEffectiveness).toFixed(3)):"?"],["Support Cases",kgCases||"?"],["Decision",autoPassed?"AUTO":"REVIEW"]].map(([l,v])=>(<div key={l} className="bg-white/60 rounded p-2"><div className="text-[10px] text-indigo-400">{l}</div><div className={`text-sm font-bold ${l==="Decision"?(autoPassed?"text-emerald-700":"text-amber-700"):"text-indigo-800"}`}>{v}</div></div>))}</div></div></div>:<p className="text-xs text-slate-400 py-4 text-center">暂无 KG 决策数据。启动 lifecycle 后显示。</p>}{reasons.length>0&&(<details className="mt-3"><summary className="text-[10px] text-slate-400 cursor-pointer hover:text-slate-600">全部理由 ({reasons.length})</summary><div className="mt-1 space-y-0.5 max-h-32 overflow-auto">{reasons.map((r,i)=><div key={i} className="text-[10px] font-mono text-slate-500 bg-slate-50 rounded px-1.5 py-0.5">{r}</div>)}</div></details>)}</div></div>);}
+
+function FeatureReconstructionView({ plan }: { plan: FeatureReconstructionPlan }) {
+  const opLabel: Record<string, string> = {
+    DROP: "删除", LOG_TRANSFORM: "对数变换", INTERACTION: "特征交互",
+    IMPUTE: "缺失插补", STANDARDIZE: "标准化",
+  };
+  const opBadge: Record<string, string> = {
+    DROP: "text-red-600 bg-red-100",
+    LOG_TRANSFORM: "text-sky-600 bg-sky-100",
+    INTERACTION: "text-indigo-600 bg-indigo-100",
+    IMPUTE: "text-amber-600 bg-amber-100",
+    STANDARDIZE: "text-emerald-600 bg-emerald-100",
+  };
+  const core = plan.transforms.filter(t => t.reason.includes("核心特征"));
+  const normal = plan.transforms.filter(t => !t.reason.includes("核心特征"));
+  return (
+    <Panel title={`特征重构计划 (schema: ${plan.target_schema_version})`}>
+      <div className="mb-3 grid grid-cols-2 gap-2 text-xs text-slate-500">
+        <div>变换前: <b className="text-slate-800">{plan.expected_feature_count_before}</b> 个特征</div>
+        <div>变换后: <b className="text-slate-800">{plan.expected_feature_count_after}</b> 个特征</div>
+        <div>总变换: <b className="text-slate-800">{plan.transforms.length}</b> 条</div>
+        <div>核心保护: <b className="text-amber-700">{core.length}</b> 条</div>
+      </div>
+      {core.length > 0 && (
+        <details className="mb-3" open>
+          <summary className="text-xs font-semibold text-amber-700 cursor-pointer hover:text-amber-800">
+            ⚠ 核心特征保护 ({core.length} 个特征被拦截，改为修改而非删除)
+          </summary>
+          <div className="mt-2 space-y-1.5 max-h-64 overflow-auto">
+            {core.map((t, i) => (
+              <div key={i} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
+                <span className="font-semibold text-amber-800">{t.source_feature}</span>
+                <span className="ml-2 text-amber-600">{opLabel[t.operation] || t.operation}</span>
+                <div className="mt-0.5 text-amber-500 font-mono text-[10px]">{t.reason}</div>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      {normal.length > 0 && (
+        <details open>
+          <summary className="text-xs font-semibold text-slate-600 cursor-pointer hover:text-slate-700">
+            常规变换 ({normal.length} 条)
+          </summary>
+          <div className="mt-2 space-y-1.5 max-h-64 overflow-auto">
+            {normal.map((t, i) => (
+              <div key={i} className={`rounded-lg border px-3 py-2 text-xs ${
+                t.operation === "DROP"
+                  ? "border-red-200 bg-red-50"
+                  : "border-slate-200 bg-slate-50"
+              }`}>
+                <span className="font-semibold text-slate-800">
+                  {t.source_feature}
+                  {t.target_feature ? <span className="text-slate-400"> → {t.target_feature}</span> : null}
+                </span>
+                <span className={`ml-2 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${opBadge[t.operation] || "text-slate-600 bg-slate-100"}`}>
+                  {opLabel[t.operation] || t.operation}
+                </span>
+                <div className="mt-0.5 text-slate-400 font-mono text-[10px]">{t.reason}</div>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </Panel>
+  );
+}
 
 function TrainingPlanDetail({plan,id}:{plan:TrainingPlanDetail|null;id:string}){if(!id)return<Empty text="还没有训练计划"/>;if(!plan)return<Empty text="正在读取训练计划…"/>;const w=plan.windows??{};return(<div className="mt-4 space-y-3"><div className="rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3"><div className="flex justify-between items-center"><div><p className="text-sm font-semibold text-indigo-900">训练计划详情</p><p className="text-xs text-indigo-700 mt-1">Worker 按此计划的数据窗口、算法和验收规则训练候选模型</p></div><span className="font-mono text-[11px] font-semibold text-indigo-800 bg-white rounded-lg px-3 py-1.5">{id}</span></div></div><div className="grid gap-3 lg:grid-cols-2">{[{title:"训练对象",rows:[["模型",plan.model_id],["算法",plan.algorithm],["当前版本",plan.frozen_champion_version||plan.champion_version],["根因",formatRootCause(plan.root_cause_code)],["风险等级",formatRiskLevel(plan.risk_level)]]},{title:"数据窗口",rows:[["基线",w.baseline_window_id],["训练窗口",joinValues(w.training_window_ids)],["验证窗口",joinValues(w.validation_window_ids)],["OOT",`${formatValue(w.oot_window_id)} / ${w.oot_locked?"已锁定":"未锁定"}`],["标签版本",joinValues(plan.label_versions)]]},{title:"训练配置",rows:[["策略",plan.strategy_code],["业务轮次",plan.business_round||plan.max_business_rounds?`第 ${formatValue(plan.business_round)} / ${formatValue(plan.max_business_rounds)} 轮`:"-"],["特征版本",plan.feature_schema_version],["随机种子",plan.random_seed],["策略参数",JSON.stringify(plan.strategy_parameters??{})]]},{title:"验收规则",rows:[["目标指标",joinValues(plan.target_metric_codes)],["资格规则版本",plan.qualification_rule_version],["状态",plan.status],["阻塞原因",joinValues(plan.blocking_reasons)]]}].map(g=>(<div key={g.title} className="rounded-lg border border-slate-200 bg-white p-3"><p className="text-sm font-semibold text-slate-800">{g.title}</p><div className="mt-2 space-y-1.5">{g.rows.map(([l,v])=>(<div key={l} className="grid grid-cols-[90px_1fr] gap-2 rounded bg-slate-50 px-2 py-1.5"><span className="text-xs text-slate-500">{l}</span><span className="text-xs font-semibold text-slate-700 break-words">{v||"-"}</span></div>))}</div></div>))}</div></div>);}

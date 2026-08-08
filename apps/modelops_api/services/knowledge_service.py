@@ -336,11 +336,18 @@ class KnowledgeService:
 
     async def query_iteration_context(
         self, root_cause_code: str, diagnosis_run_id: str = "",
+        severity: float | None = None,
+        algorithm: str | None = None,
     ):
         """P3 KG: 查询 RootCause → Strategy 候选 + 反向校验 Strategy → RootCause。
 
         RootCause─RECOMMENDS→Strategy（正向推荐）
         Strategy─MITIGATES→RootCause（反向缓解, 用于校验策略是否真的能解决这个根因）
+
+        边上过滤条件:
+        - min_severity: 低于此严重度不推荐该策略
+        - applicable_algorithms: 不适用于此算法的策略被过滤
+        - strategy_tier: "full" / "light" / "minimal" — 路由读取
         """
         import uuid as _uuid
         from packages.models.iteration.iteration_context import (
@@ -355,12 +362,21 @@ class KnowledgeService:
             async with self.driver.session(
                 database="neo4j", default_access_mode="READ"
             ) as session:
-                # 正向：RootCause → Strategy
+                # 正向：RootCause → Strategy（按 severity + algorithm 过滤）
                 result = await session.run(
                     """
                     MATCH (rc:RootCause {entity_code: $root_cause_code})
                           -[rec:RECOMMENDS]->(s:Strategy)
                     WHERE rec.enabled = true
+                      AND ($severity IS NULL
+                           OR rec.min_severity IS NULL
+                           OR $severity >= rec.min_severity)
+                      AND ($severity IS NULL
+                           OR rec.max_severity IS NULL
+                           OR $severity <= rec.max_severity)
+                      AND ($algorithm IS NULL
+                           OR rec.applicable_algorithms IS NULL
+                           OR $algorithm IN rec.applicable_algorithms)
                     OPTIONAL MATCH (s)-[mit:MITIGATES]->(rc)
                     WHERE mit.enabled = true
                     RETURN rc.entity_code AS root_cause_code,
@@ -390,10 +406,13 @@ class KnowledgeService:
                            ) AS historical_effectiveness,
                            coalesce(rec.support_case_count, rec.evidence_case_count, 0) AS support_case_count,
                            coalesce(rec.total_case_count, rec.evidence_case_count, 0) AS total_case_count,
-                           coalesce(rec.natural_case_count, rec.evidence_case_count, 0) AS natural_case_count
+                           coalesce(rec.natural_case_count, rec.evidence_case_count, 0) AS natural_case_count,
+                           coalesce(rec.strategy_tier, 'full') AS strategy_tier
                     ORDER BY rec.effective_weight DESC
                     """,
                     root_cause_code=root_cause_code,
+                    severity=severity,
+                    algorithm=algorithm,
                 )
                 async for record in result:
                     sc = record["strategy_code"]
@@ -434,6 +453,7 @@ class KnowledgeService:
                             training_cost_level=record["training_cost_level"] or "MEDIUM",
                             risk_level=record["risk_level"] or "LOW",
                             executor_code=record["executor_code"] or "MODEL_RETRAIN",
+                            strategy_tier=record["strategy_tier"] or "full",
                         )
                     )
 

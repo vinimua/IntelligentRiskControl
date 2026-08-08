@@ -93,5 +93,16 @@ class Settings(BaseSettings):
     repair_executor_url: str | None = None
     deployment_executor_url: str | None = None
 
+    # ── P3 校准/阈值执行配置 ──
+    calibration_calibrator_type: str = "isotonic"         # "isotonic" | "platt"
+    calibration_metrics: list[str] = ["BRIER", "ECE"]
+    calibration_artifact_prefix: str = "s3://riskitem/calibrators"
+
+    threshold_search_metric: str = "F1"                   # "F1" | "Precision@K" | "CostBased"
+    threshold_search_min: float = 0.3
+    threshold_search_max: float = 0.7
+    threshold_search_step: float = 0.01
+    threshold_artifact_prefix: str = "s3://riskitem/thresholds"
+
 
 settings = Settings()

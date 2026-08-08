@@ -823,30 +823,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/iteration/data-eligibility:
-    post:
-      tags:
-      - iteration
-      summary: Evaluate Data Eligibility
-      operationId: evaluate_data_eligibility_api_iteration_data_eligibility_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DataEligibilityInput'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/iteration/decisions:
     post:
       tags:
@@ -2629,56 +2605,6 @@ components:
       - challenger_scores
       - labels
       title: ComparisonRequest
-    DataEligibilityInput:
-      properties:
-        window_id:
-          type: string
-          title: Window Id
-        data_track:
-          $ref: '#/components/schemas/DataTrack'
-          default: NATURAL
-        data_snapshot_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Data Snapshot Id
-        data_checksum:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Data Checksum
-        label_column:
-          type: string
-          title: Label Column
-          default: is_bad
-        label_missing_rate:
-          type: number
-          maximum: 1.0
-          minimum: 0.0
-          title: Label Missing Rate
-        label_mature:
-          type: boolean
-          title: Label Mature
-          default: true
-        label_imputation_requested:
-          type: boolean
-          title: Label Imputation Requested
-          default: false
-        feature_missing_stats:
-          items:
-            $ref: '#/components/schemas/FeatureMissingStat'
-          type: array
-          title: Feature Missing Stats
-        requested_for_supervised_training:
-          type: boolean
-          title: Requested For Supervised Training
-          default: true
-      additionalProperties: false
-      type: object
-      required:
-      - window_id
-      - label_missing_rate
-      title: DataEligibilityInput
     DataTrack:
       type: string
       enum:
@@ -2833,34 +2759,6 @@ components:
           default: true
       type: object
       title: ExternalExecutionCallbackRequest
-    FeatureMissingStat:
-      properties:
-        feature_code:
-          type: string
-          title: Feature Code
-        missing_rate:
-          type: number
-          maximum: 1.0
-          minimum: 0.0
-          title: Missing Rate
-        is_critical:
-          type: boolean
-          title: Is Critical
-          default: false
-        band:
-          anyOf:
-          - $ref: '#/components/schemas/MissingRateBand'
-          - type: 'null'
-        training_blocked:
-          type: boolean
-          title: Training Blocked
-          default: false
-      additionalProperties: false
-      type: object
-      required:
-      - feature_code
-      - missing_rate
-      title: FeatureMissingStat
     FeatureReconstructionTriggerRequest:
       properties:
         model_id:
@@ -3087,15 +2985,6 @@ components:
       required:
       - metric_code
       title: MetricDegradation
-    MissingRateBand:
-      type: string
-      enum:
-      - NORMAL
-      - WATCH
-      - WARNING
-      - CRITICAL
-      - UNAVAILABLE
-      title: MissingRateBand
     PlanBuildRequest:
       properties:
         approval_id:
@@ -3119,12 +3008,6 @@ components:
           minimum: 1.0
           title: Business Round
           default: 1
-        data_eligibility_assessment_ids:
-          items:
-            type: string
-          type: array
-          minItems: 1
-          title: Data Eligibility Assessment Ids
         data_snapshot_ids:
           items:
             type: string
@@ -3143,7 +3026,6 @@ components:
       - model_algorithm
       - feature_schema_version
       - preprocessing_version
-      - data_eligibility_assessment_ids
       - data_snapshot_ids
       - label_versions
       title: PlanBuildRequest
@@ -3673,6 +3555,14 @@ components:
           - type: string
           - type: 'null'
           title: Error Message
+        data_reproducible:
+          type: boolean
+          title: Data Reproducible
+          default: false
+        candidate_frozen_before_oot:
+          type: boolean
+          title: Candidate Frozen Before Oot
+          default: false
       additionalProperties: false
       type: object
       required:
@@ -3783,6 +3673,10 @@ components:
         artifact_output_uri:
           type: string
           title: Artifact Output Uri
+        training_mode:
+          type: string
+          title: Training Mode
+          default: full
       additionalProperties: false
       type: object
       required:

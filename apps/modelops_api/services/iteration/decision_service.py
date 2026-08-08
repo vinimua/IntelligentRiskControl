@@ -129,6 +129,7 @@ class RepairDecisionService:
                         "historical_effectiveness": best.historical_effectiveness,
                         "support_case_count": best.support_case_count,
                         "algorithm": best.algorithm,
+                        "strategy_tier": best.strategy_tier,
                         "feature_schema_version": best.feature_schema_version,
                         "preprocessing_version": best.preprocessing_version,
                         "label_versions": best.label_versions,

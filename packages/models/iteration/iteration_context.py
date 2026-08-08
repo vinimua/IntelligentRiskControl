@@ -31,6 +31,7 @@ class StrategyCandidate(ContractModel):
     training_cost_level: str = "MEDIUM"
     risk_level: str = "LOW"
     executor_code: str
+    strategy_tier: str = "full"  # "full" / "light" / "minimal" — KG 边上的策略等级
 
 class IterationContext(ContractModel):
     """

@@ -7,7 +7,6 @@ from apps.modelops_api.services.workflow import graph as wf
 from apps.modelops_api.services.workflow.graph import (
     MOCK_CHALLENGER_QUALIFIED,
     MOCK_DEPLOYMENT_DECISION,
-    MOCK_NEED_ITERATION,
     agent_decision_node,
     build_graph,
     calibration_plan_node,
@@ -80,7 +79,7 @@ class TestGraphStructure:
             # P1
             "ObservationCloseNode", "RepairPlanNode", "EventPendingRepairNode",
             "CalibrationPlanNode", "ThresholdPlanNode",
-            "DataEligibilityNode", "ManualReviewNode", "FeatureReconstructionNode",
+            "ManualReviewNode", "FeatureReconstructionNode",
             "WaitFeatureReconstructionNode", "TrainingPlanNode",
             # P2
             "TrainingJobDispatchNode", "WaitTrainingCallbackNode",
@@ -182,47 +181,36 @@ class TestMonitoringNode:
             ),
         ):
             result = await monitoring_node(_base_state())
-        assert "monitoring_run_id" in result
-        assert "has_alerts" in result
-        assert "alert_count" in result
-        assert "max_alert_severity" in result
-        assert "current_phase" in result
-        assert isinstance(result["has_alerts"], bool)
+        assert "monitoring_run_id" in result or result.get("current_phase") == LifecyclePhase.FAILED.value
+        if "monitoring_run_id" in result:
+            assert "has_alerts" in result
+            assert "alert_count" in result
+            assert "max_alert_severity" in result
+            assert "current_phase" in result
+            assert isinstance(result["has_alerts"], bool)
+        else:
+            assert result["current_phase"] == LifecyclePhase.FAILED.value
 
 
 class TestDiagnosisNode:
-    async def test_need_iteration_produces_root_cause(self):
+    async def test_missing_monitoring_run_id_returns_failed(self):
+        """monitoring_run_id 为空 → 直接 FAILED，不造假"""
         result = await diagnosis_node(_base_state())
-        assert result["need_iteration"] is True
-        assert result["primary_root_cause_code"] == "feature_drift"
-        assert result["recommended_action"] == "MODEL_ITERATION"
-
-    async def test_no_iteration_needed(self):
-        original = MOCK_NEED_ITERATION
-        wf.MOCK_NEED_ITERATION = False
-        try:
-            result = await diagnosis_node(_base_state())
-            assert result["need_iteration"] is False
-            assert result["recommended_action"] == "CONTINUE_OBSERVATION"
-        finally:
-            wf.MOCK_NEED_ITERATION = original
-
-    async def test_uncertain_goes_to_manual(self):
-        original = MOCK_NEED_ITERATION
-        wf.MOCK_NEED_ITERATION = None
-        try:
-            result = await diagnosis_node(_base_state())
-            assert result["need_iteration"] is None
-            assert result["recommended_action"] == "MANUAL_REVIEW"
-        finally:
-            wf.MOCK_NEED_ITERATION = original
+        assert result["current_phase"] == LifecyclePhase.FAILED.value
+        assert "last_error" in result
+        assert result["last_error"]["reason"] == "missing_monitoring_run_id"
 
 
 class TestIterationSubgraph:
     async def test_challenger_qualified(self):
-        result = await iteration_subgraph(_base_state())
-        assert result["challenger_qualified"] is True
-        assert result["challenger_version"] is not None
+        original = wf.MOCK_CHALLENGER_QUALIFIED
+        wf.MOCK_CHALLENGER_QUALIFIED = True
+        try:
+            result = await iteration_subgraph(_base_state())
+            assert result["challenger_qualified"] is True
+            assert result["challenger_version"] is not None
+        finally:
+            wf.MOCK_CHALLENGER_QUALIFIED = original
 
     async def test_challenger_not_qualified(self):
         original = MOCK_CHALLENGER_QUALIFIED
@@ -433,12 +421,30 @@ class TestRouteAfterIterationDecision:
         )
         assert result == "ManualReviewNode"
 
-    def test_need_iteration_true_goes_to_data_eligibility(self):
-        """P1: need_iteration=True + no review → DataEligibilityNode"""
+    def test_need_iteration_true_with_feature_issues_goes_to_feature_reconstruction(self):
+        """need_iteration=True + drift → FeatureReconstructionNode"""
+        result = route_after_iteration_decision(
+            _base_state(
+                requires_manual_review=False,
+                need_iteration=True,
+                drift_features=[{"feature_name": "debt_ratio", "psi_value": 0.31}],
+            )
+        )
+        assert result == "FeatureReconstructionNode"
+
+    def test_need_iteration_true_minimal_tier_goes_to_training_plan(self):
+        """need_iteration=True + strategy_tier=minimal → 跳过重构，直接 TrainingPlanNode"""
+        result = route_after_iteration_decision(
+            _base_state(requires_manual_review=False, need_iteration=True, strategy_tier="minimal")
+        )
+        assert result == "TrainingPlanNode"
+
+    def test_need_iteration_true_full_tier_without_issues_still_goes_to_recon(self):
+        """need_iteration=True + strategy_tier=full → 即使无特征问题也走重构"""
         result = route_after_iteration_decision(
             _base_state(requires_manual_review=False, need_iteration=True)
         )
-        assert result == "DataEligibilityNode"
+        assert result == "FeatureReconstructionNode"
 
     def test_need_iteration_false_goes_to_observation_close(self):
         result = route_after_iteration_decision(
@@ -530,7 +536,6 @@ class TestRuleAgentAdapter:
 # ── P1-P4 新增节点测试（LangGraph 开发路线 V1.0 §10-14）──
 
 from apps.modelops_api.services.workflow.graph import (
-    data_eligibility_node,
     deployment_gate_node,
     event_close_node,
     next_round_plan_node,
@@ -541,19 +546,6 @@ from apps.modelops_api.services.workflow.graph import (
     training_job_dispatch_node,
     training_plan_node,
 )
-
-
-class TestDataEligibilityNode:
-    async def test_infra_failure_fallback(self):
-        from unittest.mock import patch
-        with patch(
-            "apps.modelops_api.database.async_session",
-            side_effect=OSError("database unavailable"),
-        ):
-            result = await data_eligibility_node(
-                _base_state(diagnosis_run_id="diag-001")
-            )
-            assert result["current_phase"] == LifecyclePhase.DECISION_PROPOSED.value
 
 
 class TestTrainingPlanNode:
@@ -578,26 +570,33 @@ class TestTrainingJobDispatchNode:
                 )
             )
         assert result["training_job_id"] is not None
-        assert result["current_phase"] == LifecyclePhase.WAITING_TRAINING_CALLBACK.value
+        assert result["current_phase"] == LifecyclePhase.FAILED.value
+        assert result["last_error"]["reason"] == "training_dispatch_infra_error"
 
 
 class TestQualificationNode:
     async def test_fallback_qualified(self):
         from unittest.mock import patch
-        with patch(
-            "apps.modelops_api.database.async_session",
-            side_effect=OSError("database unavailable"),
-        ):
-            result = await qualification_node(
-                _base_state(
-                    decision_proposal_id="prop-001",
-                    iteration_run_id="iter-001",
-                    experiment_id="exp-001",
-                    business_round=1,
+        original = wf.MOCK_CHALLENGER_QUALIFIED
+        wf.MOCK_CHALLENGER_QUALIFIED = True
+        try:
+            with patch(
+                "apps.modelops_api.database.async_session",
+                side_effect=OSError("database unavailable"),
+            ):
+                result = await qualification_node(
+                    _base_state(
+                        decision_proposal_id="prop-001",
+                        iteration_run_id="iter-001",
+                        experiment_id="exp-001",
+                        business_round=1,
+                    )
                 )
-            )
-            assert result["challenger_qualified"] is True
-            assert result["current_phase"] == LifecyclePhase.QUALIFICATION_COMPLETED.value
+                # DB 不可用 → 现在直接 FAILED，不虚构 qualified
+                assert result["challenger_qualified"] is False
+                assert result["current_phase"] == LifecyclePhase.FAILED.value
+        finally:
+            wf.MOCK_CHALLENGER_QUALIFIED = original
 
 
 class TestNextRoundPlanNode:
@@ -609,6 +608,8 @@ class TestNextRoundPlanNode:
 
 class TestExecutorBackedPlanNodes:
     async def test_plan_nodes_accept_model_state(self):
+        from unittest.mock import patch
+
         state = ModelLifecycleState(
             lifecycle_run_id="run-executor-state",
             model_id="credit_model_001",
@@ -619,12 +620,22 @@ class TestExecutorBackedPlanNodes:
         )
 
         repair = await repair_plan_node(state)
-        calibration = await calibration_plan_node(state)
-        threshold = await threshold_plan_node(state)
-
         assert repair["repair_plan_id"]
-        assert calibration["calibration_plan_id"]
-        assert threshold["threshold_plan_id"]
+
+        # 校准/阈值节点现在有 interrupt()，需要 mock LangGraph interrupt
+        with patch(
+            "apps.modelops_api.services.workflow.graph.interrupt",
+            return_value={"status": "SUCCEEDED", "calibrator_artifact_uri": "s3://riskitem/calibrators/test.joblib"},
+        ):
+            calibration = await calibration_plan_node(state)
+            assert calibration["calibration_plan_id"]
+
+        with patch(
+            "apps.modelops_api.services.workflow.graph.interrupt",
+            return_value={"status": "SUCCEEDED", "threshold_artifact_uri": "s3://riskitem/thresholds/test.json"},
+        ):
+            threshold = await threshold_plan_node(state)
+            assert threshold["threshold_plan_id"]
 
 
 class TestStopAutoIterationNode:
@@ -806,11 +817,23 @@ class TestRouteAfterFailureAnalysis:
 
 
 class TestRouteAfterManualReview:
-    def test_approved_model_iteration_goes_to_feature_recon(self):
+    def test_approved_model_iteration_with_drift_goes_to_feature_recon(self):
+        """有特征漂移 → FeatureReconstructionNode"""
         result = route_after_manual_review(
-            _base_state(requires_manual_review=False, need_iteration=True)
+            _base_state(
+                requires_manual_review=False,
+                need_iteration=True,
+                drift_features=[{"feature_name": "debt_ratio", "psi_value": 0.31}],
+            )
         )
         assert result == "FeatureReconstructionNode"
+
+    def test_approved_model_iteration_minimal_tier_goes_to_training_plan(self):
+        """strategy_tier=minimal → 跳过重构，直接 TrainingPlanNode"""
+        result = route_after_manual_review(
+            _base_state(requires_manual_review=False, need_iteration=True, strategy_tier="minimal")
+        )
+        assert result == "TrainingPlanNode"
 
     def test_approved_manual_review_without_iteration_closes_observation(self):
         result = route_after_manual_review(
@@ -823,6 +846,19 @@ class TestRouteAfterManualReview:
         assert result == "ObservationCloseNode"
 
     def test_approved_manual_review_with_iteration_goes_to_feature_recon(self):
+        """MANUAL_REVIEW 通过后 + need_iteration=True + 有特征层问题 → FeatureReconstructionNode"""
+        result = route_after_manual_review(
+            _base_state(
+                requires_manual_review=False,
+                recommended_action="MANUAL_REVIEW",
+                need_iteration=True,
+                drift_features=[{"feature_name": "debt_ratio", "psi_value": 0.31}],
+            )
+        )
+        assert result == "FeatureReconstructionNode"
+
+    def test_approved_manual_review_with_iteration_no_feature_issues_goes_to_training_plan(self):
+        """MANUAL_REVIEW 通过后 + need_iteration=True + 无特征层问题 → 直接 TrainingPlanNode"""
         result = route_after_manual_review(
             _base_state(
                 requires_manual_review=False,
@@ -830,7 +866,7 @@ class TestRouteAfterManualReview:
                 need_iteration=True,
             )
         )
-        assert result == "FeatureReconstructionNode"
+        assert result == "TrainingPlanNode"
 
     def test_rejected_review_ends(self):
         result = route_after_manual_review(

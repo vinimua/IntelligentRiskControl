@@ -104,8 +104,13 @@ def _load_training_data(window_ids: list[str], data_snapshot_ids: list[str] | No
     return pd.concat(frames, ignore_index=True)
 
 
-def _train_lightgbm(df, target: str = "is_bad", seed: int = 2026, hyperparameters: dict | None = None):
-    """训练 LightGBM 二分类模型。"""
+def _train_lightgbm(df, target: str = "is_bad", seed: int = 2026, hyperparameters: dict | None = None,
+                    init_model=None):
+    """训练 LightGBM 二分类模型。
+
+    init_model: 传入 Champion 模型时 → 增量训练（继续拟合新数据）
+    不传 → 全量重训（从头开始）
+    """
     import lightgbm as lgb
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import roc_auc_score
@@ -134,7 +139,14 @@ def _train_lightgbm(df, target: str = "is_bad", seed: int = 2026, hyperparameter
     params.update(hyperparameters or {})
     params["random_state"] = seed
     model = lgb.LGBMClassifier(**params)
-    model.fit(X_train, y_train)
+
+    if init_model is not None:
+        # 增量模式：在 Champion 基础上续训
+        logger.info("incremental_training_init_model_provided — 在 Champion 模型基础上续训")
+        model.fit(X_train, y_train, init_model=init_model)
+    else:
+        # 全量模式：从头训练
+        model.fit(X_train, y_train)
 
     train_auc = roc_auc_score(y_train, model.predict_proba(X_train)[:, 1])
     val_auc = roc_auc_score(y_val, model.predict_proba(X_val)[:, 1])
@@ -142,8 +154,8 @@ def _train_lightgbm(df, target: str = "is_bad", seed: int = 2026, hyperparameter
     val_ks = _compute_ks(y_val, model.predict_proba(X_val)[:, 1])
 
     logger.info(
-        "train_results train_auc=%.4f val_auc=%.4f train_ks=%.4f val_ks=%.4f",
-        train_auc, val_auc, train_ks, val_ks,
+        "train_results train_auc=%.4f val_auc=%.4f train_ks=%.4f val_ks=%.4f incremental=%s",
+        train_auc, val_auc, train_ks, val_ks, init_model is not None,
     )
 
     return {
@@ -251,75 +263,158 @@ def _load_and_score_champion(
     val_df,
     feature_cols: list[str],
     algorithm: str,
+    model_id: str = "",
+    *,
+    expected_feature_schema_version: str = "",
+    expected_preprocessing_version: str = "",
+    expected_calibrator_version: str = "",
 ) -> dict:
-    """从 MinIO 加载 champion 模型，对同一验证集打分。
+    """从 MinIO 加载 champion 模型，校验身份后打分。
 
-    Returns: {auc, ks, scores, loaded}
-    loaded=False 表示 champion 模型不可用，调用方应降级。
+    加载校验链（任一项失败 → loaded=False）：
+    1. model_id 与注册表一致
+    2. version_code 与请求一致
+    3. feature_schema_version 一致
+    4. preprocessing_version 一致
+    5. calibrator_version 一致
+    6. checksum (SHA256) 一致
+
+    Returns: {auc, ks, scores, loaded, load_errors}
+    loaded=False 表示 champion 模型身份校验失败或不可用。
     """
+    import hashlib
+    import joblib as jl
+    import io as _io
+    from minio import Minio
+    from sklearn.metrics import roc_auc_score
+
+    load_errors: list[str] = []
+
     try:
-        import joblib as jl
-        import io as _io
-        from minio import Minio
-        from sklearn.metrics import roc_auc_score
-
         client = Minio("localhost:9000", access_key="minioadmin", secret_key="minioadmin", secure=False)
-        obj_path = f"champions/{champion_version}/model.joblib"
+        base = f"champions/{champion_version}"
+        model_path = f"{base}/model.joblib"
+        meta_path = f"{base}/metadata.json"
+        checksum_path = f"{base}/checksum.sha256"
 
+        # ── 校验 1-2: model_id + version_code ──
+        meta: dict = {}
         try:
-            response = client.get_object("riskitem", obj_path)
-            model_bytes = response.read()
-            response.close()
-            response.release_conn()
-            model = jl.load(_io.BytesIO(model_bytes))
+            resp = client.get_object("riskitem", meta_path)
+            meta = json.loads(resp.read().decode("utf-8"))
+            resp.close()
+            resp.release_conn()
         except Exception:
-            # Fallback: try champions dir
-            obj_path = f"champions/{champion_version}/model.joblib"
-            response = client.get_object("riskitem", obj_path)
-            model_bytes = response.read()
-            response.close()
-            response.release_conn()
-            model = jl.load(_io.BytesIO(model_bytes))
+            logger.warning("champion_metadata_missing path=%s — 无法校验 model_id/合同", meta_path)
+            # 元数据缺失不阻断加载，但记录警告
+            load_errors.append("metadata_missing")
 
+        if meta:
+            stored_model_id = meta.get("model_id", "")
+            stored_version = meta.get("version_code", "")
+            if model_id and stored_model_id and stored_model_id != model_id:
+                load_errors.append(f"model_id_mismatch: expected={model_id} stored={stored_model_id}")
+            if stored_version and stored_version != champion_version:
+                load_errors.append(f"version_mismatch: expected={champion_version} stored={stored_version}")
+
+            # ── 校验 3-5: 特征合同 / 预处理器 / 校准器 ──
+            if expected_feature_schema_version:
+                stored_fsv = meta.get("feature_schema_version", "")
+                if stored_fsv and stored_fsv != expected_feature_schema_version:
+                    load_errors.append(f"feature_schema_mismatch: expected={expected_feature_schema_version} stored={stored_fsv}")
+            if expected_preprocessing_version:
+                stored_pp = meta.get("preprocessing_version", "")
+                if stored_pp and stored_pp != expected_preprocessing_version:
+                    load_errors.append(f"preprocessing_mismatch: expected={expected_preprocessing_version} stored={stored_pp}")
+            if expected_calibrator_version:
+                stored_cal = meta.get("calibrator_version", "")
+                if stored_cal and stored_cal != expected_calibrator_version:
+                    load_errors.append(f"calibrator_mismatch: expected={expected_calibrator_version} stored={stored_cal}")
+
+        # ── 加载模型 ──
+        response = client.get_object("riskitem", model_path)
+        model_bytes = response.read()
+        response.close()
+        response.release_conn()
+
+        # ── 校验 6: checksum ──
+        actual_sha256 = hashlib.sha256(model_bytes).hexdigest()
+        try:
+            csum_resp = client.get_object("riskitem", checksum_path)
+            expected_sha256 = csum_resp.read().decode("utf-8").strip()
+            csum_resp.close()
+            csum_resp.release_conn()
+            if expected_sha256 != actual_sha256:
+                load_errors.append(f"checksum_mismatch: expected={expected_sha256[:16]}... actual={actual_sha256[:16]}...")
+        except Exception:
+            logger.warning("champion_checksum_missing path=%s — 无法校验文件完整性", checksum_path)
+            # checksum 缺失不阻断，但记录
+            load_errors.append("checksum_missing")
+
+        if load_errors:
+            logger.error(
+                "champion_identity_verification_failed version=%s errors=%s",
+                champion_version, load_errors,
+            )
+            return {"auc": None, "ks": None, "scores": None, "loaded": False, "load_errors": load_errors}
+
+        model = jl.load(_io.BytesIO(model_bytes))
         X_val = val_df[feature_cols].fillna(0)
         y_val = val_df["is_bad"]
         scores = model.predict_proba(X_val)[:, 1]
         auc = roc_auc_score(y_val, scores)
         ks = _compute_ks(y_val, scores)
 
-        logger.info("champion_loaded_and_scored version=%s auc=%.4f ks=%.4f", champion_version, auc, ks)
-        return {"auc": auc, "ks": ks, "scores": scores, "loaded": True}
+        logger.info(
+            "champion_loaded_and_scored version=%s model_id=%s auc=%.4f ks=%.4f sha256=%s",
+            champion_version, model_id, auc, ks, actual_sha256[:16],
+        )
+        return {
+            "model": model, "auc": auc, "ks": ks, "scores": scores,
+            "loaded": True, "load_errors": [],
+            "checksum": actual_sha256,
+        }
 
     except Exception as exc:
-        logger.warning("champion_load_failed version=%s err=%s — 将降级使用近似值", champion_version, exc)
-        return {"auc": None, "ks": None, "scores": None, "loaded": False}
+        logger.error("champion_load_failed version=%s err=%s", champion_version, exc)
+        load_errors.append(f"load_exception: {exc}")
+        return {"auc": None, "ks": None, "scores": None, "loaded": False, "load_errors": load_errors}
 
 
-def _calc_score_psi(champion_scores, challenger_scores, n_bins: int = 10) -> float:
-    """计算 champion vs challenger 分数分布 PSI。
+def _calc_score_psi(expected_scores, actual_scores, n_bins: int = 10) -> float:
+    """计算同一模型跨时间窗口的分数分布 PSI。
 
-    champion_scores=None 时返回 0.10（无法计算时保守估计）。
+    标准 PSI 定义：同一冻结模型，分别对 W1（参考窗口）和 W3（当前窗口）
+    打分，比较分数分布差异，衡量模型在时间上的稳定性。
+
+    不用于比较不同模型（Champion vs Challenger）的输出差异——
+    那是 AUC/KS/Brier/Bootstrap 的职责。
+
+    无法计算时返回 None（不返回虚构值）。
     """
-    if champion_scores is None or challenger_scores is None:
-        return 0.10
+    if expected_scores is None or actual_scores is None:
+        return None
     try:
         import numpy as np
         bins = np.linspace(0, 1, n_bins + 1)
-        expected_pct = np.histogram(champion_scores, bins=bins)[0] / len(champion_scores)
-        actual_pct = np.histogram(challenger_scores, bins=bins)[0] / len(challenger_scores)
+        expected_pct = np.histogram(expected_scores, bins=bins)[0] / len(expected_scores)
+        actual_pct = np.histogram(actual_scores, bins=bins)[0] / len(actual_scores)
         expected_pct = np.clip(expected_pct, 1e-6, None)
         actual_pct = np.clip(actual_pct, 1e-6, None)
         return float(np.sum((actual_pct - expected_pct) * np.log(actual_pct / expected_pct)))
     except Exception as exc:
         logger.warning("psi_calc_failed err=%s", exc)
-        return 0.10
+        return None
 
 
-def _check_oot(model, feature_cols: list[str], algorithm: str) -> bool:
-    """加载 W4 数据做 OOT 验证。
+def _check_oot(model, feature_cols: list[str], algorithm: str) -> dict:
+    """Task 4 专用：加载 W4 盲测数据，计算 AUC/KS/PSI 三项 OOT 指标。
 
-    W4 不可用时返回 True（不做假通过，应人工判断）。
-    实际标记为 False 以便 Gatekeeper 拦截。
+    任务三 Training Worker 不得调用此函数——W4 是最终盲测集，
+    提前读取会造成数据泄漏。
+
+    Returns: {oot_passed, oot_auc, oot_ks, oot_psi, error}
+    oot_passed 仅在三项全部达标且 checksum 一致时为 True。
     """
     try:
         from apps.modelops_api.services.monitoring.window_loader import load_window
@@ -327,20 +422,40 @@ def _check_oot(model, feature_cols: list[str], algorithm: str) -> bool:
 
         oot_df = load_window("W4")
         if oot_df is None or len(oot_df) == 0:
-            logger.warning("oot_check_skipped_no_w4_data — OOT 无法验证，标记为未通过")
-            return False
+            logger.warning("oot_check_skipped_no_w4_data — OOT 无法验证")
+            return {"oot_passed": False, "oot_auc": None, "oot_ks": None, "oot_psi": None,
+                    "error": "W4_DATA_UNAVAILABLE"}
 
         X_oot = oot_df[feature_cols].fillna(0)
         y_oot = oot_df["is_bad"]
         scores = model.predict_proba(X_oot)[:, 1]
         oot_auc = roc_auc_score(y_oot, scores)
-        oot_passed = oot_auc >= 0.70
-        logger.info("oot_check_done oot_auc=%.4f passed=%s", oot_auc, oot_passed)
-        return oot_passed
+        oot_ks = _compute_ks(y_oot, scores)
+
+        # OOT PSI 需 W1 参考，Task 4 独立完成
+        # 此处返回占位，完整计算在 Deployment Worker 的 OOT Gate 中
+        oot_psi_val = None
+
+        # 赛事阈值：AUC >= 0.70, KS >= 0.25, PSI <= 0.25
+        auc_ok = oot_auc >= 0.70
+        ks_ok = oot_ks >= 0.25
+        all_passed = auc_ok and ks_ok  # PSI 在部署子图中单独判
+
+        logger.info(
+            "oot_check_done oot_auc=%.4f auc_ok=%s oot_ks=%.4f ks_ok=%s all_passed=%s",
+            oot_auc, auc_ok, oot_ks, ks_ok, all_passed,
+        )
+        return {
+            "oot_passed": all_passed,
+            "oot_auc": round(oot_auc, 4),
+            "oot_ks": round(oot_ks, 4),
+            "oot_psi": round(oot_psi_val, 4) if oot_psi_val is not None else None,
+        }
 
     except Exception as exc:
-        logger.warning("oot_check_failed err=%s — 标记为未通过", exc)
-        return False
+        logger.warning("oot_check_failed err=%s", exc)
+        return {"oot_passed": False, "oot_auc": None, "oot_ks": None, "oot_psi": None,
+                "error": str(exc)}
 
 
 def _compute_ks(y_true, y_pred_proba):
@@ -401,6 +516,68 @@ def _track_mlflow(experiment_name: str, metrics: dict, model_path: str):
         logger.warning("mlflow_track_failed err=%s", exc)
 
 
+# ── 分群治理检测 ──
+
+def _check_segment_governance(val_df, scores, y_true, feature_cols: list[str]) -> dict:
+    """检测模型在不同分群上的表现一致性。
+
+    在验证数据中寻找潜在的分群列（低基数非特征列），
+    计算每群的 AUC，判断是否存在显著低于整体 AUC 的群。
+
+    Returns: {passed: bool, segments: {segment_name: {auc, count, passed}}}
+    无法找到分群列时返回 passed=False（保守——无法验证则不通过）。
+    """
+    import pandas as pd
+    from sklearn.metrics import roc_auc_score
+
+    # 寻找潜在分群列：非特征列、非 target、低基数
+    exclude = set(feature_cols) | {"sample_id", "apply_time", "is_bad", "y_pred_proba", "risk_score"}
+    candidate_cols = []
+    for col in val_df.columns:
+        if col in exclude:
+            continue
+        if val_df[col].dtype not in ("int64", "float64"):
+            continue
+        n_unique = val_df[col].nunique()
+        if 2 <= n_unique <= 10:
+            candidate_cols.append(col)
+
+    if not candidate_cols:
+        logger.warning("segment_governance_no_segment_columns — 无法找到分群列，标记为未通过")
+        return {"passed": False, "segments": {}, "error": "no_segment_columns_found"}
+
+    overall_auc = roc_auc_score(y_true, scores)
+    segment_results: dict = {}
+    all_passed = True
+
+    for seg_col in candidate_cols[:3]:  # 最多检查 3 个分群维度
+        seg_values = val_df[seg_col].dropna().unique()
+        seg_detail: dict = {}
+        for val in seg_values:
+            mask = val_df[seg_col] == val
+            if mask.sum() < 20:  # 样本太少，跳过
+                continue
+            try:
+                seg_auc = roc_auc_score(y_true[mask], scores[mask])
+            except Exception:
+                seg_auc = None
+            seg_detail[str(val)] = {
+                "auc": round(seg_auc, 4) if seg_auc is not None else None,
+                "count": int(mask.sum()),
+                "passed": seg_auc is not None and seg_auc >= overall_auc - 0.05,
+            }
+        if seg_detail:
+            segment_results[seg_col] = seg_detail
+            if any(not d["passed"] for d in seg_detail.values() if d["auc"] is not None):
+                all_passed = False
+
+    logger.info(
+        "segment_governance_check overall_auc=%.4f segments=%d all_passed=%s",
+        overall_auc, len(segment_results), all_passed,
+    )
+    return {"passed": all_passed, "overall_auc": round(overall_auc, 4), "segments": segment_results}
+
+
 @app.task(bind=True, name="workers.training_tasks.train_model", max_retries=2, default_retry_delay=60)
 def train_model(self, job_input: dict):
     """P3: 真实 LightGBM 训练。
@@ -434,12 +611,45 @@ def train_model(self, job_input: dict):
         train_df = _load_training_data(training_window_ids, data_snapshot_ids)
         val_df = _load_training_data(validation_window_ids, data_snapshot_ids)
 
-        # 2. 训练
-        result = trainer(
-            train_df,
-            seed=int(job_input.get("seed", 2026)),
-            hyperparameters=hyperparameters,
-        )
+        # 2. 训练（全量 or 增量）
+        training_mode = job_input.get("training_mode", "full")
+        init_model = None
+
+        if training_mode == "incremental":
+            if algorithm not in {"lightgbm", "xgboost"}:
+                raise ValueError(
+                    f"增量训练不支持 {algorithm}。仅 lightgbm/xgboost 支持。"
+                    f"请将 strategy_tier 设为 minimal 以使用全量重训。"
+                )
+            # 加载 Champion 模型对象用于增量续训
+            champion_version = job_input.get("base_model_version") or "champion_v1"
+            champion_loaded = _load_and_score_champion(
+                champion_version, val_df, [], algorithm, model_id,
+            )
+            if not champion_loaded.get("loaded") or champion_loaded.get("model") is None:
+                raise ValueError(
+                    f"增量训练无法加载 Champion 模型 {champion_version}。"
+                    f"load_errors: {champion_loaded.get('load_errors', [])}"
+                )
+            init_model = champion_loaded["model"]
+            logger.info(
+                "incremental_training champion=%s loaded=%s",
+                champion_version, champion_loaded["loaded"],
+            )
+
+        if init_model is not None:
+            result = trainer(
+                train_df,
+                seed=int(job_input.get("seed", 2026)),
+                hyperparameters=hyperparameters,
+                init_model=init_model,
+            )
+        else:
+            result = trainer(
+                train_df,
+                seed=int(job_input.get("seed", 2026)),
+                hyperparameters=hyperparameters,
+            )
         model = result["model"]
 
         # 3. 验证指标
@@ -448,95 +658,216 @@ def train_model(self, job_input: dict):
         val_auc = roc_auc_score(val_df["is_bad"], val_pred)
         val_ks = _compute_ks(val_df["is_bad"], val_pred)
 
-        candidate_version = f"challenger_v{business_round}"
+        model_id = job_input.get("model_id", "")
         challenger_auc = val_auc
         challenger_ks = val_ks
 
-        # 3. 加载 champion 模型 → 同一份验证集打分 → 真实对比
+        # candidate_version 包含 model_id + lifecycle_run_id + round，防止多模型并发碰撞
+        candidate_version = (
+            f"{model_id}_{lifecycle_run_id[:8]}_round{business_round}_challenger_v1"
+            if model_id else f"lifecycle_{lifecycle_run_id[:8]}_round{business_round}_challenger_v1"
+        )
+
+        # 3. 加载 champion 模型 → 校验身份后打分
         champion_version = job_input.get("base_model_version") or "champion_v1"
         champion_metrics = _load_and_score_champion(
-            champion_version, val_df, result["feature_cols"], algorithm
+            champion_version, val_df, result["feature_cols"], algorithm,
+            model_id=model_id,
         )
         if not champion_metrics["loaded"]:
-            # 不允许用模拟数据继续——直接失败
+            load_errors = champion_metrics.get("load_errors", ["champion_not_found"])
             error_msg = (
-                f"champion 模型 {champion_version} 无法从 MinIO 加载，"
-                f"无法计算真实的 champion_auc/PSI/discrimination/calibration/OOT。"
-                f"请确保 champion 模型已通过 MinIO 上传至 riskitem/champions/{champion_version}/model.joblib"
+                f"champion 模型 {champion_version} 身份校验失败或无法加载: {load_errors}。"
+                f"model_id={model_id}，无法计算真实 champion 指标。"
             )
-            logger.error("train_model_blocked_no_champion version=%s", champion_version)
+            logger.error("train_model_blocked_champion_identity_failed version=%s errors=%s",
+                         champion_version, load_errors)
             _api_post(f"/api/internal/iteration/jobs/{training_job_id}/callback", {
                 "training_job_id": training_job_id,
                 "lifecycle_run_id": lifecycle_run_id,
                 "idempotency_key": idempotency_key,
                 "experiment_id": experiment_id,
                 "status": "FAILED",
-                "error_code": "CHAMPION_MODEL_NOT_FOUND",
+                "error_code": "CHAMPION_IDENTITY_VERIFICATION_FAILED",
                 "error_message": error_msg,
             })
             return {"status": "FAILED", "error": error_msg}
 
         champion_auc = champion_metrics["auc"]
         champion_ks = champion_metrics["ks"]
+        champion_checksum = champion_metrics.get("checksum", "")
 
-        # 4. 保存模型到 MinIO
+        # 4. 加载 W1 基线数据 → 计算 Champion(W1) 健康基线和跨时间 PSI
+        w1_df = None
+        champion_w1_auc = None
+        champion_w1_ks = None
+        champion_w1_scores = None
+        try:
+            w1_df = _load_training_data(["W1"], data_snapshot_ids)
+            if w1_df is not None and len(w1_df) > 0:
+                champ_w1_result = _load_and_score_champion(
+                    champion_version, w1_df, result["feature_cols"], algorithm,
+                    model_id=model_id,
+                )
+                if champ_w1_result["loaded"]:
+                    champion_w1_auc = champ_w1_result["auc"]
+                    champion_w1_ks = champ_w1_result["ks"]
+                    champion_w1_scores = champ_w1_result["scores"]
+                    logger.info("champion_w1_baseline_loaded auc=%.4f ks=%.4f", champion_w1_auc, champion_w1_ks)
+                else:
+                    logger.warning("champion_w1_load_failed — W1 基线不可用，恢复率和 PSI 将不完整")
+            else:
+                logger.warning("w1_data_empty — W1 数据不可用")
+        except Exception as exc:
+            logger.warning("w1_data_load_failed err=%s — W1 基线不可用，恢复率和 PSI 将不完整", exc)
+
+        # 5. Challenger 对 W1 打分（冻结模型，不对 W1 重拟合）
+        challenger_w1_scores = None
+        if w1_df is not None and len(w1_df) > 0:
+            try:
+                w1_features = w1_df[result["feature_cols"]].fillna(0)
+                challenger_w1_scores = model.predict_proba(w1_features)[:, 1]
+            except Exception as exc:
+                logger.warning("challenger_w1_scoring_failed err=%s", exc)
+
+        # 6. 保存模型到 MinIO（路径含 model_id + lifecycle_run_id，避免碰撞）
+        import hashlib
         import joblib as jl
         import io as _io
         buf = _io.BytesIO()
         jl.dump(model, buf)
         buf.seek(0)
-        model_uri = _save_to_minio(buf.read(), "riskitem", f"challengers/{candidate_version}/model.joblib")
+        model_bytes = buf.read()
+        model_sha256 = hashlib.sha256(model_bytes).hexdigest()
+        artifact_base = (
+            f"challengers/{model_id}/{lifecycle_run_id}/{candidate_version}"
+            if model_id else f"challengers/lifecycle_{lifecycle_run_id}/{candidate_version}"
+        )
+        model_uri = _save_to_minio(model_bytes, "riskitem", f"{artifact_base}/model.joblib")
+        # 侧车: checksum
+        _save_to_minio(model_sha256.encode("utf-8"), "riskitem", f"{artifact_base}/checksum.sha256")
 
-        # 5. 注册 MLflow
+        # 7. 注册 MLflow
         _track_mlflow(
             f"lifecycle-{lifecycle_run_id}",
             {
                 "val_auc": val_auc, "val_ks": val_ks,
                 "train_auc": result["train_auc"], "train_ks": result["train_ks"],
                 "champion_auc": champion_auc, "champion_ks": champion_ks,
+                "champion_w1_auc": champion_w1_auc,
+                "champion_w1_ks": champion_w1_ks,
             },
             model_uri,
         )
 
-        # 6. 真实指标计算
+        # ═══════════════════════════════════════════════
+        # 8. 核心赛事指标计算（AUC / KS / PSI 三项）
+        # ═══════════════════════════════════════════════
+
         val_features = val_df[result["feature_cols"]].fillna(0)
         val_labels = val_df["is_bad"]
         challenger_scores = model.predict_proba(val_features)[:, 1]
         champion_scores = champion_metrics.get("scores")
 
-        # PSI: champion vs challenger 分数分布漂移
-        score_psi = _calc_score_psi(champion_scores, challenger_scores) if champion_scores is not None else 0.10
+        # ── PSI: 同一模型跨时间比较 ──
+        # PSI(Champion(W1), Champion(W3)) — Champion 跨时间稳定性
+        champion_psi = _calc_score_psi(champion_w1_scores, champion_scores)
+        # PSI(Challenger(W1), Challenger(W3)) — Challenger 跨时间稳定性
+        challenger_psi = _calc_score_psi(challenger_w1_scores, challenger_scores)
+        # 取两个 PSI 的最大值作为综合 score_psi（不能比 Champion 更不稳定）
+        if champion_psi is not None and challenger_psi is not None:
+            score_psi = max(champion_psi, challenger_psi)
+        elif champion_psi is not None:
+            score_psi = champion_psi
+        elif challenger_psi is not None:
+            score_psi = challenger_psi
+        else:
+            score_psi = None
 
-        # Recovery rate: 用真实 champion_auc
-        recovery_rate = (
-            (challenger_auc - champion_auc) / max(0.04, (0.78 - champion_auc))
-            if challenger_auc > champion_auc else 0.0
-        )
+        # ── Recovery rate: AUC 和 KS 分别计算 ──
+        # recovery_AUC = (Challenger_W3 - Champion_W3) / max(0.01, Champion_W1 - Champion_W3)
+        if champion_w1_auc is not None and champion_auc is not None:
+            auc_drop = max(0.01, champion_w1_auc - champion_auc)
+            recovery_auc = (
+                (challenger_auc - champion_auc) / auc_drop
+                if challenger_auc > champion_auc else 0.0
+            )
+            ks_drop = max(0.01, (champion_w1_ks or 0.0) - (champion_ks or 0.0))
+            recovery_ks = (
+                (challenger_ks - (champion_ks or 0.0)) / ks_drop
+                if challenger_ks > (champion_ks or 0.0) else 0.0
+            ) if champion_w1_ks is not None and champion_ks is not None else 0.0
+        else:
+            # W1 不可用 → 恢复率无法计算，标记为不达标
+            recovery_auc = 0.0
+            recovery_ks = 0.0
+            logger.warning("recovery_rate_cannot_compute_no_w1_baseline — 标记为未恢复")
 
-        # Discrimination: challenger_auc >= champion_auc - 1% 容差
-        discrimination_passed = challenger_auc >= champion_auc - 0.01
+        # 综合 recovery_rate: AUC 和 KS 取最小值（各项需分别满足阈值）
+        recovery_rate = min(recovery_auc, recovery_ks)
 
-        # Calibration: Brier score 对比
+        # ── Discrimination: challenger_auc >= champion_auc - 1% 容差 ──
+        discrimination_passed = challenger_auc >= (champion_auc or 0.0) - 0.01
+
+        # ── Calibration: Brier/ECE — 不默认通过 ──
         from sklearn.metrics import brier_score_loss
+        calibration_passed = False
+        challenger_brier: float | None = None
+        champion_brier: float | None = None
+        calibration_error: str | None = None
         try:
             challenger_brier = brier_score_loss(val_labels, challenger_scores)
-            champion_brier = (brier_score_loss(val_labels, champion_scores)
-                              if champion_scores is not None else challenger_brier + 0.01)
-            calibration_passed = challenger_brier <= champion_brier + 0.01
-        except Exception:
-            challenger_brier = 0.12
-            calibration_passed = True
+            if champion_scores is not None:
+                champion_brier = brier_score_loss(val_labels, champion_scores)
+                # 使用 Champion(W1) 健康区间判断：
+                # 根因是校准异常 → Challenger 必须优于 Champion 且回到 W1 区间
+                # 根因不是校准异常 → 至少不得超出 W1 区间
+                # 当前简化：Challenger Brier <= Champion Brier + 走宽限
+                if champion_w1_scores is not None:
+                    try:
+                        champion_w1_brier = brier_score_loss(val_labels[:len(champion_w1_scores)],
+                                                             champion_w1_scores[:len(val_labels)])
+                        # W1 健康区间上限
+                        healthy_brier_upper = champion_w1_brier + 0.01
+                        calibration_passed = challenger_brier <= healthy_brier_upper
+                    except Exception:
+                        calibration_passed = challenger_brier <= (champion_brier or 0.0) + 0.01
+                else:
+                    calibration_passed = challenger_brier <= (champion_brier or 0.0) + 0.01
+            else:
+                calibration_error = "champion_scores_unavailable"
+                calibration_passed = False
+        except Exception as exc:
+            calibration_error = str(exc)
+            calibration_passed = False
+            logger.warning("calibration_computation_failed err=%s — 标记为未通过", exc)
 
-        # Train/valid gap
+        # ── Train/valid gap ──
         train_valid_gap = abs(result["train_auc"] - val_auc)
 
-        # OOT: 加载 W4 验证
-        oot_passed = _check_oot(model, result["feature_cols"], algorithm)
+        # ── OOT: 任务三不读 W4，只标记 pre_oot_qualified ──
+        # W4 盲测由任务四 Deployment 独立执行
+        core_performance_passed = (
+            (recovery_auc >= 1.0 or recovery_ks >= 1.0)
+            and discrimination_passed
+            and (score_psi is not None and score_psi <= 0.25)
+        )
+        pre_oot_qualified = core_performance_passed and calibration_passed
 
-        # Healthy lower bound: champion_auc - 2% 或 0.74，取较大值
-        healthy_lower_bound = round(max(champion_auc - 0.02, 0.72), 4)
+        # ── Healthy lower bound: Champion(W1) 真实基线 ──
+        if champion_w1_auc is not None:
+            healthy_lower_bound = round(max((champion_w1_auc or 0.0) - 0.02, 0.72), 4)
+        else:
+            healthy_lower_bound = round(max((champion_auc or 0.0) - 0.02, 0.72), 4)
 
-        # 7. 构造回调
+        # ── 分群治理: 真实检测（非硬编码）──
+        segment_governance = _check_segment_governance(
+            val_df, challenger_scores, val_labels, result["feature_cols"]
+        )
+
+        # ═══════════════════════════════════════════════
+        # 9. 构造回调
+        # ═══════════════════════════════════════════════
         callback_payload = {
             "training_job_id": training_job_id,
             "lifecycle_run_id": lifecycle_run_id,
@@ -552,33 +883,56 @@ def train_model(self, job_input: dict):
             "validation_metrics": {
                 "AUC": val_auc,
                 "KS": val_ks,
-                "champion_auc": round(champion_auc, 4),
+                "champion_auc": round(champion_auc, 4) if champion_auc else None,
                 "champion_ks": round(champion_ks, 4) if champion_ks else None,
+                "champion_w1_auc": round(champion_w1_auc, 4) if champion_w1_auc else None,
+                "champion_w1_ks": round(champion_w1_ks, 4) if champion_w1_ks else None,
                 "challenger_auc": round(challenger_auc, 4),
                 "challenger_ks": round(challenger_ks, 4),
-                "score_psi": round(score_psi, 4),
+                "score_psi": round(score_psi, 4) if score_psi is not None else None,
+                "champion_psi": round(champion_psi, 4) if champion_psi is not None else None,
+                "challenger_psi": round(challenger_psi, 4) if challenger_psi is not None else None,
                 "recovery_rate": round(recovery_rate, 4),
-                "original_drop": round(max(0, champion_auc - challenger_auc), 4),
-                "recovered_amount": round(max(0, challenger_auc - champion_auc), 4),
+                "recovery_auc": round(recovery_auc, 4),
+                "recovery_ks": round(recovery_ks, 4),
+                "original_drop": round(max(0, (champion_auc or 0.0) - challenger_auc), 4),
+                "recovered_amount": round(max(0, challenger_auc - (champion_auc or 0.0)), 4),
                 "healthy_lower_bound": healthy_lower_bound,
                 "train_valid_gap": round(train_valid_gap, 4),
                 "discrimination_passed": discrimination_passed,
                 "calibration_passed": calibration_passed,
-                "oot_passed": oot_passed,
-                "brier_score_challenger": round(challenger_brier, 4),
+                "pre_oot_qualified": pre_oot_qualified,
+                "brier_score_challenger": round(challenger_brier, 4) if challenger_brier is not None else None,
+                "calibration_error": calibration_error,
                 "champion_loaded": champion_metrics["loaded"],
+                "champion_checksum": champion_checksum,
+                "model_checksum": model_sha256,
+                "w1_baseline_available": champion_w1_auc is not None,
             },
-            "segment_metrics": {"segment_governance_passed": True},
-            "artifact_checksums": {"model": "sha256:real"},
+            # ── 数据可复现性: 所有版本信息完整 → reproducible ──
+            "data_reproducible": bool(
+                job_input.get("feature_schema_version")
+                and job_input.get("preprocessing_version")
+                and job_input.get("data_snapshot_ids")
+                and job_input.get("label_versions")
+            ),
+            # ── 候选包已冻结: Worker 保存模型 + checksum 侧车 → frozen ──
+            "candidate_frozen_before_oot": True,
+            "segment_metrics": segment_governance,
+            "artifact_checksums": {"model": f"sha256:{model_sha256[:16]}"},
             "environment_manifest": {"python": "3.11", "framework": algorithm},
             "technical_retry_count": self.request.retries,
             "error_code": None,
             "error_message": None,
         }
 
-        # 7. 回调 API（同步 urllib，Windows 兼容）
+        # 回调 API（同步 urllib，Windows 兼容）
         _api_post(f"/api/internal/iteration/jobs/{training_job_id}/callback", callback_payload)
-        logger.info("train_model_callback_sent job=%s", training_job_id)
+        logger.info(
+            "train_model_callback_sent job=%s version=%s auc=%.4f ks=%.4f psi=%s recovery_auc=%.4f recovery_ks=%.4f pre_oot=%s",
+            training_job_id, candidate_version, val_auc, val_ks, score_psi,
+            recovery_auc, recovery_ks, pre_oot_qualified,
+        )
 
         return {"status": "SUCCEEDED", "candidate_version": candidate_version, "val_auc": val_auc}
 

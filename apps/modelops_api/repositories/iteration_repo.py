@@ -9,7 +9,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.models.iteration import (
-    DataEligibilityResult,
     DecisionProposal,
     FailureReport,
     ManualReviewReport,
@@ -29,47 +28,6 @@ def _json(model: Any) -> str:
 class IterationRepo:
     def __init__(self, session: AsyncSession):
         self.session = session
-
-    async def save_data_eligibility(
-        self, assessment_id: str, result: DataEligibilityResult
-    ) -> None:
-        await self.session.execute(
-            text("""
-                INSERT INTO iteration.data_eligibility_assessments
-                    (assessment_id, window_id, status,
-                     supervised_training_allowed, result_json, rule_version)
-                VALUES (:id, :window, :status, :allowed, :payload, :version)
-            """),
-            {
-                "id": assessment_id,
-                "window": result.window_id,
-                "status": result.status.value,
-                "allowed": result.supervised_training_allowed,
-                "payload": _json(result),
-                "version": result.rule_version,
-            },
-        )
-
-    async def get_data_eligibility_assessments(
-        self, assessment_ids: list[str]
-    ) -> list[tuple[str, DataEligibilityResult]]:
-        if not assessment_ids:
-            return []
-        result = await self.session.execute(
-            text("""
-                SELECT assessment_id, result_json
-                FROM iteration.data_eligibility_assessments
-                WHERE assessment_id = ANY(CAST(:ids AS UUID[]))
-            """),
-            {"ids": assessment_ids},
-        )
-        return [
-            (
-                str(row["assessment_id"]),
-                DataEligibilityResult.model_validate(row["result_json"]),
-            )
-            for row in result.mappings()
-        ]
 
     async def save_proposal(self, proposal: DecisionProposal) -> None:
         await self.session.execute(

@@ -18,6 +18,7 @@ class FeatureOperation(str, Enum):
     LOG_TRANSFORM = "LOG_TRANSFORM"
     INTERACTION = "INTERACTION"
     BINNING = "BINNING"
+    IMPUTE = "IMPUTE"
     STANDARDIZE = "STANDARDIZE"
 
 

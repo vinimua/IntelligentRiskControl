@@ -35,6 +35,8 @@ STAGE_HEALTH_RULES: dict[str, dict] = {
     },
     "OOT_GATE": {
         "min_auc": 0.70,
+        "min_ks": 0.25,
+        "max_score_psi": 0.25,
         "max_train_valid_gap": 0.05,
     },
     "SHADOW": {

@@ -1,10 +1,5 @@
 """任务三共享合同。"""
 
-from .data_eligibility import (
-    DataEligibilityInput,
-    DataEligibilityResult,
-    FeatureMissingStat,
-)
 from .data_incident import DataIncident, DerivedDataView
 from .decision_proposal import (
     DecisionInput,
@@ -26,14 +21,11 @@ from .round_control import RetryIdentity, RoundTransition
 from .training_plan import TrainingPlan, TrainingWindowSpec
 
 __all__ = [
-    "DataEligibilityInput",
-    "DataEligibilityResult",
     "DataIncident",
     "DecisionInput",
     "DecisionProposal",
     "DerivedDataView",
     "FailureReport",
-    "FeatureMissingStat",
     "ManualReviewReport",
     "ManualReviewSubmission",
     "MetricComparison",

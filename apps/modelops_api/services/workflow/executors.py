@@ -69,9 +69,9 @@ async def dispatch_training_job(
                 celery_task_id=getattr(async_result, "id", None),
             )
         else:
-            # 开发阶段：同步 Mock 执行
-            logger.info(
-                "training_job_mock_executed_no_celery",
+            # Celery 不可用 → 需前端手动提交训练回调
+            logger.warning(
+                "training_job_not_dispatched_celery_unavailable",
                 training_job_id=training_job_id,
             )
             dispatched = False
@@ -106,6 +106,8 @@ def create_calibration_plan(state: dict) -> dict:
 
     当前返回结构化计划（供后续 Worker 消费）。
     """
+    from ...config import settings
+
     champion_version = state.get("champion_version", "v1")
     business_round = state.get("business_round", 1)
     plan_id = state.get("calibration_plan_id") or str(uuid.uuid4())
@@ -115,9 +117,12 @@ def create_calibration_plan(state: dict) -> dict:
         "calibration_plan_id": plan_id,
         "lifecycle_run_id": lifecycle_run_id,
         "champion_version": champion_version,
-        "calibrator_type": "isotonic",  # or "platt"
-        "calibration_metrics": ["BRIER", "ECE"],
-        "artifact_output_path": f"s3://riskitem/calibrators/{champion_version}_calibrated_v{business_round}.joblib",
+        "calibrator_type": state.get("calibrator_type") or settings.calibration_calibrator_type,
+        "calibration_metrics": state.get("calibration_metrics") or settings.calibration_metrics,
+        "artifact_output_path": (
+            f"{settings.calibration_artifact_prefix}/"
+            f"{champion_version}_calibrated_v{business_round}.joblib"
+        ),
         "status": "PLANNED",
         "callback_endpoint": (
             f"/api/internal/iteration/executions/CALIBRATION/{plan_id}/callback"
@@ -137,18 +142,29 @@ def create_threshold_plan(state: dict) -> dict:
     2. 网格搜索最优阈值（F1 / Precision@K / Cost-based）
     3. 输出 threshold.json 到 MinIO
     """
+    from ...config import settings
+
     champion_version = state.get("champion_version", "v1")
     business_round = state.get("business_round", 1)
     plan_id = state.get("threshold_plan_id") or str(uuid.uuid4())
     lifecycle_run_id = state.get("lifecycle_run_id")
 
+    search_range = state.get("search_range") or {
+        "min": settings.threshold_search_min,
+        "max": settings.threshold_search_max,
+        "step": settings.threshold_search_step,
+    }
+
     return {
         "threshold_plan_id": plan_id,
         "lifecycle_run_id": lifecycle_run_id,
         "champion_version": champion_version,
-        "search_metric": "F1",
-        "search_range": {"min": 0.3, "max": 0.7, "step": 0.01},
-        "artifact_output_path": f"s3://riskitem/thresholds/{champion_version}_threshold_v{business_round}.json",
+        "search_metric": state.get("search_metric") or settings.threshold_search_metric,
+        "search_range": search_range,
+        "artifact_output_path": (
+            f"{settings.threshold_artifact_prefix}/"
+            f"{champion_version}_threshold_v{business_round}.json"
+        ),
         "status": "PLANNED",
         "callback_endpoint": (
             f"/api/internal/iteration/executions/THRESHOLD/{plan_id}/callback"
@@ -166,10 +182,19 @@ def create_repair_plan(state: dict) -> dict:
     当前产出结构化修复指令（供外部 data/pipeline 团队执行）。
     修复完成后通过 API 回调标记完成。
     """
+    from ...config import settings
+    from ...services.iteration.config_loader import load_iteration_config
+
     action = state.get("recommended_action", "DATA_REPAIR")
     diagnosis_run_id = state.get("diagnosis_run_id", "")
     plan_id = state.get("repair_plan_id") or str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        iter_config = load_iteration_config().iteration
+        default_training = iter_config.default_training_window_ids
+    except Exception:
+        default_training = ["W2", "W3"]
 
     repair_items = []
     if action == "DATA_REPAIR":
@@ -177,7 +202,7 @@ def create_repair_plan(state: dict) -> dict:
             {
                 "type": "FEATURE_BACKFILL",
                 "description": "回填特征源数据到正确版本",
-                "target_windows": ["W2", "W3"],
+                "target_windows": state.get("training_window_ids") or default_training,
                 "priority": "HIGH",
             }
         ]
@@ -186,7 +211,7 @@ def create_repair_plan(state: dict) -> dict:
             {
                 "type": "PIPELINE_FIX",
                 "description": "修复数据管道处理逻辑",
-                "affected_stages": ["WP03", "WP04"],
+                "affected_stages": state.get("affected_stages") or ["WP03", "WP04"],
                 "priority": "CRITICAL",
             }
         ]

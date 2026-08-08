@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import io
+import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -19,6 +21,9 @@ from ...config import settings
 from ...core.exceptions import NotFoundError, ServiceUnavailableError, ValidationAppError
 
 logger = structlog.get_logger(__name__)
+
+# 模型缓存 TTL（秒）：灰度期间模型可能被回滚，定期刷新
+_MODEL_CACHE_TTL: float = float(os.getenv("MODEL_CACHE_TTL_SECONDS", "300"))
 
 _MODEL_CACHE: dict[str, "LoadedModel"] = {}
 
@@ -36,6 +41,8 @@ class LoadedModel:
     model: Any
     artifact_uri: str
     loader: str
+    loaded_at: float = 0.0
+    threshold: float = 0.5
 
 
 class InferenceRouterService:
@@ -69,7 +76,12 @@ class InferenceRouterService:
 
     async def route(self, model_id: str, request_id: str) -> dict:
         state = await self.get_routing_state(model_id)
-        champion = state.get("active_version_code") or state.get("stable_version_code") or "champion_default"
+        champion = state.get("active_version_code") or state.get("stable_version_code")
+        if not champion:
+            raise ServiceUnavailableError(
+                f"model {model_id} has no active or stable version deployed; "
+                f"inference cannot be served"
+            )
         challenger = state.get("challenger_version_code")
         ratio = float(state.get("challenger_traffic_ratio", 0))
 
@@ -133,9 +145,20 @@ class InferenceRouterService:
         version = route_result["chosen_version"]
         artifact_ref = await self.get_model_artifact_ref(model_id, version)
         loaded = self._load_model_artifact(artifact_ref.artifact_uri)
-        frame, feature_names = _build_feature_frame(loaded.model, features)
+        frame, feature_names, missing_features = _build_feature_frame(loaded.model, features)
         score = _predict_score(loaded.model, frame)
-        threshold = 0.5
+
+        # 阈值优先级：模型缓存 > artifact 元数据 > MinIO threshold.json > 默认 0.5
+        threshold = loaded.threshold
+        if threshold == 0.5 and artifact_ref.metadata:
+            threshold = artifact_ref.metadata.get("threshold", threshold)
+        if threshold == 0.5:
+            threshold = _load_threshold_from_artifact(artifact_ref.artifact_uri)
+        if threshold == 0.5:
+            logger.warning(
+                "threshold_fallback_to_default model=%s version=%s — 未找到模型阈值配置，使用 0.5",
+                model_id, version,
+            )
 
         return {
             **route_result,
@@ -153,9 +176,7 @@ class InferenceRouterService:
             "feature_schema": {
                 "feature_count": len(feature_names),
                 "features_used": feature_names,
-                "missing_features_filled_with_zero": [
-                    name for name in feature_names if name not in features
-                ],
+                "missing_features_filled_with_zero": missing_features,
                 "extra_features_ignored": [
                     name for name in features.keys() if name not in feature_names
                 ],
@@ -223,19 +244,26 @@ class InferenceRouterService:
         )
 
     def _load_model_artifact(self, artifact_uri: str) -> LoadedModel:
+        now = time.time()
         cached = _MODEL_CACHE.get(artifact_uri)
-        if cached:
+        if cached and (now - cached.loaded_at) < _MODEL_CACHE_TTL:
             return cached
+        if cached:
+            logger.info("model_cache_expired uri=%s age=%.0fs — 重新加载", artifact_uri, now - cached.loaded_at)
 
+        threshold = _load_threshold_from_artifact(artifact_uri)
         try:
             if _is_joblib_uri(artifact_uri):
                 import joblib
 
                 payload = _read_artifact_bytes(artifact_uri)
                 model = joblib.load(io.BytesIO(payload))
-                loaded = LoadedModel(model=model, artifact_uri=artifact_uri, loader="joblib")
+                loaded = LoadedModel(
+                    model=model, artifact_uri=artifact_uri, loader="joblib",
+                    loaded_at=now, threshold=threshold,
+                )
             else:
-                loaded = _load_mlflow_model(artifact_uri)
+                loaded = _load_mlflow_model(artifact_uri, threshold)
         except ServiceUnavailableError:
             raise
         except Exception as exc:
@@ -244,6 +272,7 @@ class InferenceRouterService:
                 f"failed to load model artifact {artifact_uri}: {exc}"
             ) from exc
 
+        # TTL 过期后自动驱逐，或版本变更时主动失效
         _MODEL_CACHE[artifact_uri] = loaded
         return loaded
 
@@ -298,21 +327,63 @@ def _read_artifact_bytes(uri: str) -> bytes:
     raise ValidationAppError("UNSUPPORTED_ARTIFACT_URI", f"unsupported artifact uri: {uri}")
 
 
-def _load_mlflow_model(uri: str) -> LoadedModel:
+def _load_mlflow_model(uri: str, threshold: float = 0.5) -> LoadedModel:
     try:
         import mlflow.pyfunc
 
         if settings.mlflow_s3_endpoint_url:
             os.environ.setdefault("MLFLOW_S3_ENDPOINT_URL", settings.mlflow_s3_endpoint_url)
         model = mlflow.pyfunc.load_model(uri)
-        return LoadedModel(model=model, artifact_uri=uri, loader="mlflow.pyfunc")
+        return LoadedModel(model=model, artifact_uri=uri, loader="mlflow.pyfunc",
+                           loaded_at=time.time(), threshold=threshold)
     except Exception as exc:
         raise ServiceUnavailableError(
             f"cannot load MLflow model artifact {uri}: {exc}"
         ) from exc
 
 
-def _build_feature_frame(model: Any, features: dict) -> tuple[pd.DataFrame, list[str]]:
+def _load_threshold_from_artifact(artifact_uri: str) -> float:
+    """从模型 artifact 同目录加载 threshold.json。
+
+    返回阈值或 0.5（无可用的阈值配置时）。
+    """
+    try:
+        parsed = urlparse(artifact_uri)
+        # 构造 threshold.json 路径：同目录下 threshold.json
+        dir_path = parsed.path.rsplit("/", 1)[0] if "/" in parsed.path else ""
+        threshold_path = f"{dir_path}/threshold.json" if dir_path else "threshold.json"
+
+        if parsed.scheme == "s3":
+            from minio import Minio
+            client = Minio(
+                settings.minio_endpoint,
+                access_key=settings.minio_access_key,
+                secret_key=settings.minio_secret_key,
+                secure=settings.minio_secure,
+            )
+            bucket = parsed.netloc
+            object_name = threshold_path.lstrip("/")
+            try:
+                response = client.get_object(bucket, object_name)
+                data = json.loads(response.read().decode("utf-8"))
+                response.close()
+                response.release_conn()
+                threshold = float(data.get("threshold", 0.5))
+                logger.info("threshold_loaded_from_minio path=%s value=%.4f", threshold_path, threshold)
+                return threshold
+            except Exception:
+                return 0.5  # threshold.json 不存在，使用默认
+        elif parsed.scheme == "file":
+            thresh_file = Path(parsed.path).parent / "threshold.json"
+            if thresh_file.exists():
+                data = json.loads(thresh_file.read_text())
+                return float(data.get("threshold", 0.5))
+        return 0.5
+    except Exception:
+        return 0.5
+
+
+def _build_feature_frame(model: Any, features: dict) -> tuple[pd.DataFrame, list[str], list[str]]:
     feature_names = _feature_names(model)
     if not feature_names:
         if not features:
@@ -322,11 +393,26 @@ def _build_feature_frame(model: Any, features: dict) -> tuple[pd.DataFrame, list
             )
         feature_names = list(features.keys())
 
-    row = {name: features.get(name, 0) for name in feature_names}
+    # 区分"传了 0"和"没传"：缺失特征用 NaN 占位
+    row: dict[str, Any] = {}
+    missing: list[str] = []
+    for name in feature_names:
+        if name in features:
+            row[name] = features[name]
+        else:
+            row[name] = None  # None → pd.to_numeric → NaN → fillna(0)
+            missing.append(name)
+
     frame = pd.DataFrame([row], columns=feature_names)
     for col in frame.columns:
         frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0)
-    return frame, feature_names
+
+    if missing:
+        logger.warning(
+            "inference_missing_features filled=%d features=%s",
+            len(missing), missing[:10],
+        )
+    return frame, feature_names, missing
 
 
 def _feature_names(model: Any) -> list[str]:

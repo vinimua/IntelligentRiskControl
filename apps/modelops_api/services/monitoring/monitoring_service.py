@@ -118,8 +118,8 @@ class MonitoringService:
         run = await self.repo.create_run(
             model_id=model_id,
             champion_version=champion_version,
-            baseline_window_id=baseline_window_id or "auto",
-            current_window_id=current_window_id or "auto",
+            baseline_window_id=baseline_window_id or "W0",
+            current_window_id=current_window_id or "W3",
             data_track=data_track,
             trace_id=trace_id,
         )
@@ -228,8 +228,8 @@ class MonitoringService:
             monitoring_run_id=monitoring_run_id,
             model_id=model_id,
             model_version=champion_version,
-            monitor_window_id=current_window_id or "auto",
-            baseline_id=baseline_window_id or "auto",
+            monitor_window_id=current_window_id or "W3",
+            baseline_id=baseline_window_id or "W0",
             data_track=track,
             alert_details=triggered_alerts,
         )
@@ -932,8 +932,8 @@ class MonitoringService:
         run = await self.repo.create_run(
             model_id=model_id,
             champion_version=champion_version,
-            baseline_window_id=baseline_window_id or "auto",
-            current_window_id=current_window_id or "auto",
+            baseline_window_id=baseline_window_id or "W0",
+            current_window_id=current_window_id or "W3",
             data_track=data_track,
             trace_id=trace_id,
         )
@@ -1104,7 +1104,7 @@ class MonitoringService:
             "model_id": [model_id] * max(1, len(drift_rows)),
             "model_version": [champion_version] * max(1, len(drift_rows)),
             "data_track": [data_track] * max(1, len(drift_rows)),
-            "monitor_window_id": [current_window_id or "auto"] * max(1, len(drift_rows)),
+            "monitor_window_id": [current_window_id or "W3"] * max(1, len(drift_rows)),
             "auc": [perf.get("auc")],
             "ks": [perf.get("ks")],
             "prediction_mean": [float(df_current["y_pred_proba"].mean()) if "y_pred_proba" in df_current else None],
@@ -1151,8 +1151,8 @@ class MonitoringService:
             monitoring_run_id=monitoring_run_id,
             model_id=model_id,
             model_version=champion_version,
-            monitor_window_id=current_window_id or "auto",
-            baseline_id=baseline_window_id or "auto",
+            monitor_window_id=current_window_id or "W3",
+            baseline_id=baseline_window_id or "W0",
             data_track=track,
             alert_details=triggered_alerts,
             # V2 新增字段（AlertContext 已支持）

@@ -18,14 +18,12 @@ from packages.models.common.enums import (
     RiskLevel,
 )
 from packages.models.iteration import (
-    DataEligibilityInput,
     DecisionInput,
     ManualReviewSubmission,
     MetricDegradation,
     RootCauseCandidate,
 )
 from packages.models.iteration.iteration_context import IterationContext, StrategyCandidate
-from apps.modelops_api.services.iteration import DataEligibilityService
 from packages.models.iteration.training_job import TrainingJobInput
 from packages.models.iteration.round_control import RetryIdentity
 
@@ -283,15 +281,7 @@ def test_training_plan_requires_approved_model_iteration():
         )
     )
     risk = RiskAssessmentService().assess(proposal)
-    eligibility = DataEligibilityService().evaluate(
-        DataEligibilityInput(
-            window_id="W2",
-            label_missing_rate=0,
-            data_snapshot_id="snapshot-1",
-        )
-    )
     data_args = {
-        "data_eligibility_assessments": [("eligibility-1", eligibility)],
         "data_snapshot_ids": ["snapshot-1"],
         "label_versions": ["labels-v1"],
     }
@@ -352,20 +342,12 @@ def test_training_plan_uses_strategy_parameters_for_execution_config():
         }
     )
     risk = RiskAssessmentService().assess(proposal)
-    eligibility = DataEligibilityService().evaluate(
-        DataEligibilityInput(
-            window_id="W2",
-            label_missing_rate=0,
-            data_snapshot_id="snapshot-1",
-        )
-    )
 
     plan = TrainingPlanBuilder().build(
         proposal,
         risk,
         approval_id="review-1",
         iteration_run_id="iteration-1",
-        data_eligibility_assessments=[("eligibility-1", eligibility)],
         data_snapshot_ids=["snapshot-1"],
     )
 

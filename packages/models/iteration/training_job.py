@@ -47,6 +47,7 @@ class TrainingJobInput(ContractModel):
     base_model_version: str
     seed: int
     artifact_output_uri: str
+    training_mode: str = "full"  # "full" (全量重训) / "incremental" (在 Champion 基础上续训)
 
     @model_validator(mode="after")
     def validate_windows(self) -> "TrainingJobInput":

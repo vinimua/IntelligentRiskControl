@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.models.common.enums import DataTrack, ProposalStatus, ReviewDecision
 from packages.models.iteration import (
-    DataEligibilityInput,
     DecisionInput,
     ManualReviewReport,
     ManualReviewSubmission,
@@ -34,7 +33,6 @@ from ..core.exceptions import (
 from ..database import get_db
 from ..repositories.iteration_repo import IterationRepo
 from ..services.iteration import (
-    DataEligibilityService,
     FailureAttributionService,
     QualificationService,
     RepairDecisionService,
@@ -55,7 +53,6 @@ class PlanBuildRequest(BaseModel):
     feature_schema_version: str = Field(min_length=1)
     preprocessing_version: str = Field(min_length=1)
     business_round: int = Field(default=1, ge=1, le=3)
-    data_eligibility_assessment_ids: list[str] = Field(min_length=1)
     data_snapshot_ids: list[str] = Field(min_length=1)
     label_versions: list[str] = Field(min_length=1)
 
@@ -103,25 +100,6 @@ def _envelope(request: Request, data, message: str = "success") -> dict:
         "data": data,
         "trace_id": request_trace_id(request),
     }
-
-
-@router.post("/data-eligibility")
-async def evaluate_data_eligibility(
-    request: Request,
-    body: DataEligibilityInput,
-    db: AsyncSession = Depends(get_db),
-):
-    result = DataEligibilityService().evaluate(body)
-    assessment_id = str(uuid4())
-    await IterationRepo(db).save_data_eligibility(assessment_id, result)
-    return _envelope(
-        request,
-        {
-            "assessment_id": assessment_id,
-            **result.model_dump(mode="json"),
-        },
-        "data eligibility evaluated",
-    )
 
 
 @router.post("/decisions")
@@ -368,16 +346,6 @@ async def create_training_plan(
     approved_proposal = proposal.model_copy(update={"status": ProposalStatus.APPROVED})
     risk = RiskAssessmentService().assess(approved_proposal)
     iteration_run_id = str(uuid4())
-    eligibility_assessments = await repo.get_data_eligibility_assessments(
-        body.data_eligibility_assessment_ids
-    )
-    if len(eligibility_assessments) != len(
-        set(body.data_eligibility_assessment_ids)
-    ):
-        raise ValidationAppError(
-            "DATA_ELIGIBILITY_NOT_FOUND",
-            "存在无效或重复的数据资格评估 ID",
-        )
     try:
         plan = TrainingPlanBuilder().build(
             approved_proposal,
@@ -388,7 +356,6 @@ async def create_training_plan(
             feature_schema_version=body.feature_schema_version,
             preprocessing_version=body.preprocessing_version,
             business_round=body.business_round,
-            data_eligibility_assessments=eligibility_assessments,
             data_snapshot_ids=body.data_snapshot_ids,
             label_versions=body.label_versions,
         )
@@ -751,12 +718,11 @@ async def training_job_callback(
             "路径与回调中的 training_job_id 不一致",
         )
     applied, existing = await IterationRepo(db).save_training_callback(body)
-    # P1: Demo 模式下允许没有 DB 记录的训练任务回调
+# 第 753 行：把 FAILED 状态写入 PostgreSQL iteration.training_jobs 表
+# → DB 里 training_job.status 现在是 "FAILED"
+# → applied = True（新回调被接受）
     if not existing:
-        from ..config import settings
-        if not settings.workflow_demo_mode:
-            raise NotFoundError("训练任务不存在")
-        applied = True  # Demo 模式：直接标记为已处理
+        raise NotFoundError("训练任务不存在")
     if not applied:
         stored_result = existing.get("result_json")
         if stored_result != body.model_dump(mode="json"):
@@ -769,7 +735,7 @@ async def training_job_callback(
         await db.commit()
     lifecycle_resumed = False
     lifecycle_run_id = body.lifecycle_run_id
-    if lifecycle_run_id and applied and (body.status or "").upper() == "SUCCEEDED":
+    if lifecycle_run_id and applied:
         try:
             from ..services.workflow.workflow_service import WorkflowService
             from ..services.workflow.checkpointer_manager import get_checkpointer

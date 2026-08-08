@@ -26,6 +26,9 @@ class TrainingCallback(ContractModel):
     technical_retry_count: int = 0
     error_code: str | None = None
     error_message: str | None = None
+    # 任务三预标记字段
+    data_reproducible: bool = False
+    candidate_frozen_before_oot: bool = False
 
     @model_validator(mode="after")
     def validate_technical_result(self) -> "TrainingCallback":
