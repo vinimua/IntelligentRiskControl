@@ -15,13 +15,19 @@ class ThresholdRule:
     - DEVIATION_BAD: abs(delta) 或 abs(current_value) 超过阈值触发
     - LOWER_BETTER: 值低于阈值触发（如 SAMPLE_SIZE）
     - HIGHER_BETTER: delta < 0（下降）超过阈值触发，或 current_value 低于 absolute_minimum 时触发
+
+    multi_tier 模式（MISSING_RATE 专用）：
+    - high_threshold > critical_threshold 时启用三档：WARNING / HIGH / CRITICAL
+    - blocking_threshold 设置后，>= 该值触发 CRITICAL + blocking 标记
     """
 
     metric_code: str
     direction: MetricDirection
     warning_threshold: float
     critical_threshold: float
-    absolute_minimum: float | None = None  # HIGHER_BETTER 无 baseline 时的绝对兜底阈值
+    absolute_minimum: float | None = None
+    high_threshold: float | None = None        # multi-tier: HIGH 级别阈值
+    blocking_threshold: float | None = None    # multi-tier: 阻断阈值（≥触发 CRITICAL+blocking）
     rule_id: str = ""
     rule_version: str = "V1"
 
@@ -42,6 +48,19 @@ class ThresholdRule:
         abs_value = abs(value)
 
         if self.direction == MetricDirection.DEVIATION_BAD:
+            # multi_tier 路径（MISSING_RATE 四档）
+            if self.high_threshold is not None and self.high_threshold > self.critical_threshold:
+                blocking = self.blocking_threshold
+                if blocking is not None and abs_value >= blocking:
+                    return True, Severity.CRITICAL
+                if abs_value >= self.high_threshold:
+                    return True, Severity.CRITICAL
+                if abs_value >= self.critical_threshold:
+                    return True, Severity.HIGH
+                if abs_value >= self.warning_threshold:
+                    return True, Severity.WARNING
+                return False, None
+            # 标准两档路径
             if abs_value > 0 and abs_value >= self.critical_threshold:
                 return True, Severity.CRITICAL
             if abs_value > 0 and abs_value >= self.warning_threshold:
@@ -104,8 +123,10 @@ DEFAULT_THRESHOLD_RULES: dict[str, ThresholdRule] = {
     "MISSING_RATE": ThresholdRule(
         metric_code="MISSING_RATE",
         direction=MetricDirection.DEVIATION_BAD,
-        warning_threshold=0.10,
-        critical_threshold=0.30,
+        warning_threshold=0.05,       # ≥0.05 WARNING（观察）
+        critical_threshold=0.10,      # ≥0.10 HIGH（诊断确认可填）
+        high_threshold=0.20,          # ≥0.20 CRITICAL（关键阻断·非关键可填）
+        blocking_threshold=0.40,      # ≥0.40 CRITICAL + 阻断（强制人工）
     ),
     "SCHEMA_CONSISTENCY": ThresholdRule(
         metric_code="SCHEMA_CONSISTENCY",
@@ -118,5 +139,69 @@ DEFAULT_THRESHOLD_RULES: dict[str, ThresholdRule] = {
         direction=MetricDirection.LOWER_BETTER,
         warning_threshold=200,
         critical_threshold=50,
+    ),
+    # ── V1.1 补充规则：覆盖之前缺失的 10 个指标 ──
+    "PR_AUC": ThresholdRule(
+        metric_code="PR_AUC",
+        direction=MetricDirection.HIGHER_BETTER,
+        warning_threshold=0.03,
+        critical_threshold=0.08,
+        absolute_minimum=0.30,
+    ),
+    "BRIER": ThresholdRule(
+        metric_code="BRIER",
+        direction=MetricDirection.DEVIATION_BAD,
+        warning_threshold=0.003,
+        critical_threshold=0.006,
+    ),
+    "ECE": ThresholdRule(
+        metric_code="ECE",
+        direction=MetricDirection.DEVIATION_BAD,
+        warning_threshold=0.003,
+        critical_threshold=0.006,
+    ),
+    "BAD_RECALL": ThresholdRule(
+        metric_code="BAD_RECALL",
+        direction=MetricDirection.HIGHER_BETTER,
+        warning_threshold=0.03,
+        critical_threshold=0.08,
+        absolute_minimum=0.40,
+    ),
+    "BAD_RATE": ThresholdRule(
+        metric_code="BAD_RATE",
+        direction=MetricDirection.DEVIATION_BAD,
+        warning_threshold=0.01,
+        critical_threshold=0.03,
+    ),
+    "OUTLIER_RATE": ThresholdRule(
+        metric_code="OUTLIER_RATE",
+        direction=MetricDirection.DEVIATION_BAD,
+        warning_threshold=0.005,
+        critical_threshold=0.010,
+    ),
+    "DATA_QUALITY_SCORE": ThresholdRule(
+        metric_code="DATA_QUALITY_SCORE",
+        direction=MetricDirection.HIGHER_BETTER,
+        warning_threshold=0.05,
+        critical_threshold=0.15,
+        absolute_minimum=0.60,
+    ),
+    "PREDICTION_MEAN": ThresholdRule(
+        metric_code="PREDICTION_MEAN",
+        direction=MetricDirection.DEVIATION_BAD,
+        warning_threshold=0.02,
+        critical_threshold=0.05,
+    ),
+    "MAX_FEATURE_PSI_7D": ThresholdRule(
+        metric_code="MAX_FEATURE_PSI_7D",
+        direction=MetricDirection.DEVIATION_BAD,
+        warning_threshold=0.15,
+        critical_threshold=0.30,
+    ),
+    "MAX_FEATURE_PSI_30D": ThresholdRule(
+        metric_code="MAX_FEATURE_PSI_30D",
+        direction=MetricDirection.DEVIATION_BAD,
+        warning_threshold=0.15,
+        critical_threshold=0.30,
     ),
 }

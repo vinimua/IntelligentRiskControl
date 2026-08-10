@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timezone
-
-import numpy as np
-import pandas as pd
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,10 +13,7 @@ from ..neo4j_db import get_neo4j_driver
 from ..repositories.monitoring_repo import MonitoringRepo
 from ..services.knowledge_service import KnowledgeService
 from ..services.monitoring.monitoring_service import MonitoringService
-from ..services.monitoring.window_loader import load_window_with_predictions, load_window
-from ..services.monitoring.metrics_registry import MetricResult
-from packages.models.common.enums import AvailabilityStatus, DataTrack, ObjectType, RuleType, Severity
-from packages.models.monitoring.alert_context import AlertContext, AlertDetail
+from ..services.monitoring.window_loader import load_window_with_predictions
 
 router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
 
@@ -131,11 +123,294 @@ async def get_alerts(
 
 
 # ═══════════════════════════════════════════════════════════════
-# 指标持久化辅助函数
+# 富化指标 & 判定台端点（Phase 1-2）
 # ═══════════════════════════════════════════════════════════════
 
-RANKING_METRICS = [("AUC", "auc"), ("KS", "ks"), ("PR_AUC", "pr_auc"), ("BAD_RECALL", "bad_recall")]
-CALIBRATION_METRICS = [("BRIER", "brier"), ("ECE", "ece")]
+from ..services.monitoring.metric_enricher import (
+    enrich_metric,
+    build_coverage_summary,
+)
+
+
+@router.get("/runs/{monitoring_run_id}/enriched-metrics")
+async def get_enriched_metrics(
+    monitoring_run_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取富化后的全部指标 + 覆盖摘要（监控判定台核心端点）。
+
+    与 /metrics 的区别：
+    - 每个指标附带 category、display_name、direction、warning_threshold、
+      critical_threshold、threshold_usage_ratio、status_reason
+    - 额外返回 CoverageSummary（规则覆盖、类别统计、最接近阈值）
+    """
+    repo = MonitoringRepo(db)
+    run = await repo.get_run(monitoring_run_id)
+    if not run:
+        raise NotFoundError(f"监控运行 {monitoring_run_id} 不存在")
+    all_metrics = await repo.get_metrics(monitoring_run_id)
+
+    enriched = [enrich_metric(m) for m in all_metrics]
+    summary = build_coverage_summary(enriched, run)
+
+    # B1 持续性判定 — 从 monitoring_runs 读取
+    raw_persistence = run.get("persistence_judgment_json")
+    if raw_persistence is None:
+        persistence = None
+    elif isinstance(raw_persistence, dict):
+        persistence = raw_persistence
+    else:
+        persistence = _parse_detail(raw_persistence)
+    diagnosis_status = run.get("diagnosis_status")
+
+    return _envelope(request, {
+        "metrics": enriched,
+        "summary": summary,
+        "persistence": persistence,
+        "diagnosis_status": diagnosis_status,
+        "_v": "V2-persistence",
+    })
+
+
+def _psi_status(psi: float) -> str:
+    if psi >= 0.25:
+        return "critical"
+    if psi >= 0.10:
+        return "warning"
+    return "normal"
+
+
+def _psi_trend(psi_7d: float | None, psi_30d: float | None) -> str:
+    if psi_7d is not None and psi_30d is not None and psi_30d > 0:
+        if psi_7d > psi_30d * 1.1:
+            return "up"
+        if psi_7d < psi_30d * 0.9:
+            return "down"
+    return "stable"
+
+
+def _parse_detail(detail) -> dict:
+    """安全解析 metric_detail，处理 str/bytes/dict 等类型。"""
+    if detail is None:
+        return {}
+    if isinstance(detail, dict):
+        return detail
+    if isinstance(detail, (str, bytes)):
+        import json
+        try:
+            return json.loads(detail)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+@router.get("/runs/{monitoring_run_id}/feature-drift")
+async def get_feature_drift(
+    monitoring_run_id: str,
+    request: Request,
+    sort_by: str | None = Query(None, description="排序字段: psi|importance|status"),
+    sort_order: str | None = Query("desc", description="排序方向: asc|desc"),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取特征漂移表格数据。
+
+    支持按 PSI、模型重要性、状态排序。
+    7D/30D 从 monitoring_feature_drift 表读取不同时间窗口的数据。
+    """
+    repo = MonitoringRepo(db)
+    run = await repo.get_run(monitoring_run_id)
+    if not run:
+        raise NotFoundError(f"监控运行 {monitoring_run_id} 不存在")
+
+    drift_rows = await repo.get_feature_drift_by_run(monitoring_run_id)
+
+    # 结构化为前端格式
+    items: list[dict] = []
+
+    if drift_rows:
+        # ── 优先从 monitoring_feature_drift 表读取 ──
+        for row in drift_rows:
+            psi = _safe_float(row.get("psi"))
+            psi_7d = _safe_float(row.get("psi_7d"))
+            psi_30d = _safe_float(row.get("psi_30d"))
+            max_psi = psi or psi_30d or psi_7d or 0
+            threshold = 0.10
+            status = _psi_status(max_psi)
+            trend = _psi_trend(psi_7d, psi_30d)
+            items.append({
+                "feature_name": row.get("feature_name", "-"),
+                "psi_7d": psi_7d, "psi_30d": psi_30d, "max_psi": max_psi,
+                "threshold": threshold, "status": status,
+                "model_importance": row.get("model_importance"),
+                "trend": trend,
+                "js_divergence": _safe_float(row.get("js_divergence")),
+                "wasserstein_distance": _safe_float(row.get("wasserstein_distance")),
+                "ks_statistic": _safe_float(row.get("ks_statistic")),
+                "missing_rate": _safe_float(row.get("missing_rate")),
+                "missing_rate_delta": _safe_float(row.get("missing_rate_delta")),
+                "outlier_rate": _safe_float(row.get("outlier_rate")),
+                "dq_score": _safe_float(row.get("dq_score")),
+                "dq_flag": row.get("dq_flag"),
+            })
+    else:
+        # ── 回退：从 FEATURE_PSI 指标的 metric_detail.per_column_psi 提取 ──
+        all_metrics = await repo.get_metrics(monitoring_run_id)
+        for m in all_metrics:
+            if m.get("metric_code") == "FEATURE_PSI":
+                detail = _parse_detail(m.get("metric_detail"))
+                per_col = detail.get("per_column_psi") or {}
+                for feat_name, psi_val in per_col.items():
+                    psi = _safe_float(psi_val) or 0
+                    items.append({
+                        "feature_name": feat_name,
+                        "psi_7d": None, "psi_30d": None, "max_psi": psi,
+                        "threshold": 0.10, "status": _psi_status(psi),
+                        "model_importance": None, "trend": "stable",
+                        "js_divergence": None, "wasserstein_distance": None,
+                        "ks_statistic": None, "missing_rate": None,
+                        "missing_rate_delta": None, "outlier_rate": None,
+                        "dq_score": None, "dq_flag": None,
+                    })
+                break
+
+    # 排序
+    if sort_by == "psi":
+        items.sort(key=lambda x: x["max_psi"] or 0, reverse=sort_order != "asc")
+    elif sort_by == "importance":
+        imp_order = {"高": 3, "中": 2, "低": 1}
+        items.sort(key=lambda x: imp_order.get(x["model_importance"] or "", 0), reverse=sort_order != "asc")
+    elif sort_by == "status":
+        sev_order = {"critical": 3, "warning": 2, "normal": 1}
+        items.sort(key=lambda x: sev_order.get(x["status"], 0), reverse=sort_order != "asc")
+    else:
+        # 默认按 max_psi 降序
+        items.sort(key=lambda x: x["max_psi"] or 0, reverse=True)
+
+    return _envelope(request, {"items": items})
+
+
+@router.get("/runs/{monitoring_run_id}/data-quality")
+async def get_data_quality(
+    monitoring_run_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取数据质量下钻数据（字段级）。
+
+    包含：整体缺失率/异常值率/DQ分、逐字段明细、Schema 变更。
+    """
+    repo = MonitoringRepo(db)
+    run = await repo.get_run(monitoring_run_id)
+    if not run:
+        raise NotFoundError(f"监控运行 {monitoring_run_id} 不存在")
+
+    drift_rows = await repo.get_feature_drift_by_run(monitoring_run_id)
+
+    fields: list[dict] = []
+    overall_missing = 0.0
+    overall_outlier = 0.0
+    dq_scores: list[float] = []
+
+    if drift_rows:
+        # ── 优先从 monitoring_feature_drift 表读取 ──
+        for row in drift_rows:
+            field_missing = _safe_float(row.get("missing_rate")) or 0
+            field_missing_delta = _safe_float(row.get("missing_rate_delta"))
+            field_outlier = _safe_float(row.get("outlier_rate")) or 0
+            field_outlier_delta = _safe_float(row.get("outlier_rate_delta"))
+            field_dq = _safe_float(row.get("dq_score"))
+            fields.append({
+                "field_name": row.get("feature_name", "-"),
+                "baseline_missing_rate": round(field_missing - (field_missing_delta or 0), 6),
+                "current_missing_rate": round(field_missing, 6),
+                "missing_delta": field_missing_delta,
+                "outlier_rate": round(field_outlier, 6),
+                "outlier_delta": field_outlier_delta,
+                "dq_flag": row.get("dq_flag") or "OK",
+            })
+            overall_missing = max(overall_missing, abs(field_missing_delta or 0))
+            overall_outlier = max(overall_outlier, abs(field_outlier_delta or 0))
+            if field_dq is not None:
+                dq_scores.append(field_dq)
+    else:
+        # ── 回退：从 MISSING_RATE / OUTLIER_RATE / DATA_QUALITY_SCORE 指标的 metric_detail 提取 ──
+        all_metrics = await repo.get_metrics(monitoring_run_id)
+        for m in all_metrics:
+            code = m.get("metric_code")
+            detail = _parse_detail(m.get("metric_detail"))
+
+            if code == "MISSING_RATE":
+                per_col = detail.get("per_column") or {}
+                for feat_name, missing_val in per_col.items():
+                    mv = _safe_float(missing_val) or 0
+                    existing = next((f for f in fields if f["field_name"] == feat_name), None)
+                    if existing:
+                        existing["current_missing_rate"] = round(mv, 6)
+                        existing["missing_delta"] = round(mv, 6)  # 无法区分基线，假设基线为0
+                    else:
+                        fields.append({
+                            "field_name": feat_name,
+                            "baseline_missing_rate": None,
+                            "current_missing_rate": round(mv, 6),
+                            "missing_delta": round(mv, 6),
+                            "outlier_rate": None,
+                            "outlier_delta": None,
+                            "dq_flag": "WARN" if mv > 0.05 else "OK",
+                        })
+                    overall_missing = max(overall_missing, abs(mv))
+
+            elif code == "OUTLIER_RATE":
+                max_delta = _safe_float(detail.get("max_delta")) or 0
+                overall_outlier = max(overall_outlier, abs(max_delta))
+
+            elif code == "DATA_QUALITY_SCORE":
+                dq_val = _safe_float(m.get("current_value"))
+                if dq_val is not None:
+                    dq_scores.append(dq_val)
+                dq_flag = detail.get("dq_flag") or "OK"
+                # 将 DQ flag 应用到所有字段
+                for f in fields:
+                    if f["dq_flag"] == "OK" and dq_flag != "OK":
+                        f["dq_flag"] = dq_flag
+
+    avg_dq = round(sum(dq_scores) / len(dq_scores), 4) if dq_scores else None
+
+    # Schema 一致性 — 从 SCHEMA_CONSISTENCY 指标读
+    all_metrics = await repo.get_metrics(monitoring_run_id)
+    schema_changes: list[dict] = []
+    for m in all_metrics:
+        if m.get("metric_code") == "SCHEMA_CONSISTENCY":
+            detail = m.get("metric_detail") or {}
+            if isinstance(detail, str):
+                import json
+                try:
+                    detail = json.loads(detail)
+                except (json.JSONDecodeError, TypeError):
+                    detail = {}
+            for col in detail.get("missing_columns", []):
+                schema_changes.append({"change_type": "removed", "column_name": str(col), "detail": "基线存在但当前缺失"})
+            for col in detail.get("new_columns", []):
+                schema_changes.append({"change_type": "added", "column_name": str(col), "detail": "当前新增但基线不存在"})
+            for col in detail.get("type_changes", []):
+                schema_changes.append({
+                    "change_type": "type_changed",
+                    "column_name": str(col.get("column", col)),
+                    "detail": f"{col.get('from', '?')} → {col.get('to', '?')}" if isinstance(col, dict) else str(col),
+                })
+            break
+
+    return _envelope(request, {
+        "overall_missing_rate": round(overall_missing, 6),
+        "overall_outlier_rate": round(overall_outlier, 6),
+        "dq_score": avg_dq,
+        "fields": fields,
+        "schema_changes": schema_changes,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════
+# ── 辅助函数 ──
 
 
 def _safe_float(val) -> float | None:
@@ -143,209 +418,11 @@ def _safe_float(val) -> float | None:
     if val is None:
         return None
     try:
+        import math
         f = float(val)
-        return f if np.isfinite(f) else None
+        return f if math.isfinite(f) else None
     except (ValueError, TypeError):
         return None
-
-
-async def _persist_window_metrics(
-    service: MonitoringService,
-    monitoring_run_id: str,
-    window_id: str,
-    w_df: pd.DataFrame,
-    w0_df: pd.DataFrame,
-    w_perf: dict,
-    w_qual: list[dict],
-    w_drift: list[dict],
-    baseline,
-    knowledge,
-) -> tuple[list[MetricResult], list[AlertDetail]]:
-    """持久化单个窗口的全部指标（performance + quality + drift）。
-
-    Returns:
-        (all_metrics, triggered_alerts)
-    """
-
-    from ..services.monitoring.drift.algorithms import compute_performance_metrics
-    from ..services.monitoring.drift.output_monitor import output_metrics
-
-    sample_n = w_perf.get("sample_count", len(w_df))
-    bad_n = w_perf.get("bad_count", int(w_df["is_bad"].sum()))
-    detail = {"window_id": window_id, "sample_count": sample_n, "bad_count": bad_n}
-
-    all_metrics: list[MetricResult] = []
-    triggered_alerts: list[AlertDetail] = []
-
-    # ═══════════════════════════════════════════════════════════
-    # 1. 模型级性能指标（CORE）— 10 个
-    # ═══════════════════════════════════════════════════════════
-
-    # 1a. 排序能力（raw proba = risk_score）
-    for code, key in RANKING_METRICS:
-        cur_val = _safe_float(w_perf.get(key))
-        raw_base = baseline.raw_performance_reference_json.get(key) if baseline.raw_performance_reference_json else None
-        base_val = _safe_float(raw_base if raw_base is not None else baseline.performance_reference_json.get(key))
-        delta_val = (cur_val - base_val) if cur_val is not None and base_val is not None else None
-        mr = MetricResult(metric_code=code, current_value=cur_val, baseline_value=base_val,
-                          delta=delta_val,
-                          metric_detail={**detail, "category": "core", "score_type": "raw", "computed": True})
-        all_metrics.append(mr)
-        await service._persist_metric(monitoring_run_id, mr)
-
-    # 1b. 校准指标（calibrated proba = y_pred_proba）
-    cal_perf = compute_performance_metrics(w_df["is_bad"], w_df["y_pred_proba"])
-    for code, key in CALIBRATION_METRICS:
-        cur_val = _safe_float(cal_perf.get(key))
-        base_val = _safe_float(baseline.performance_reference_json.get(key))
-        delta_val = (cur_val - base_val) if cur_val is not None and base_val is not None else None
-        mr = MetricResult(metric_code=code, current_value=cur_val, baseline_value=base_val,
-                          delta=delta_val,
-                          metric_detail={**detail, "category": "core", "score_type": "calibrated", "computed": True})
-        all_metrics.append(mr)
-        await service._persist_metric(monitoring_run_id, mr)
-
-    # 1c. 预测分布（calibrated proba）— 4 个
-    cal_out = output_metrics(w_df["y_pred_proba"], w0_df["y_pred_proba"], baseline.score_edges)
-    for code, key in [("PREDICTION_STD", "prediction_std"),
-                       ("PREDICTION_MIN", "prediction_min"),
-                       ("PREDICTION_MAX", "prediction_max"),
-                       ("SCORE_PSI", "prediction_psi")]:
-        cur_val = _safe_float(cal_out.get(key))
-        mr = MetricResult(metric_code=code, current_value=cur_val,
-                          metric_detail={**detail, "category": "distribution", "score_type": "calibrated",
-                                         "computed": True})
-        all_metrics.append(mr)
-        await service._persist_metric(monitoring_run_id, mr)
-
-    pm = _safe_float(w_df["y_pred_proba"].mean())
-    base_pm = _safe_float(w0_df["y_pred_proba"].mean())
-    mr = MetricResult(metric_code="PREDICTION_MEAN", current_value=pm, baseline_value=base_pm,
-                      delta=(pm - base_pm) if pm is not None and base_pm is not None else None,
-                      metric_detail={**detail, "category": "distribution", "score_type": "calibrated",
-                                     "computed": True})
-    all_metrics.append(mr)
-    await service._persist_metric(monitoring_run_id, mr)
-
-    # 1d. 标签统计 — 4 个
-    cur_br = _safe_float(w_perf.get("bad_rate"))
-    base_br = _safe_float(baseline.performance_reference_json.get("bad_rate"))
-    mr = MetricResult(metric_code="BAD_RATE", current_value=cur_br, baseline_value=base_br,
-                      delta=(cur_br - base_br) if cur_br is not None and base_br is not None else None,
-                      metric_detail={**detail, "category": "core", "score_type": "label", "computed": True})
-    all_metrics.append(mr)
-    await service._persist_metric(monitoring_run_id, mr)
-
-    br_delta = _safe_float(w_perf.get("bad_rate_delta"))
-    mr = MetricResult(metric_code="BAD_RATE_DELTA", current_value=br_delta,
-                      metric_detail={**detail, "category": "core", "score_type": "label", "computed": True})
-    all_metrics.append(mr)
-    await service._persist_metric(monitoring_run_id, mr)
-
-    perf_drop = _safe_float(w_perf.get("performance_drop_max"))
-    mr = MetricResult(metric_code="PERFORMANCE_DROP_MAX", current_value=perf_drop,
-                      metric_detail={**detail, "category": "core", "score_type": "derived", "computed": True})
-    all_metrics.append(mr)
-    await service._persist_metric(monitoring_run_id, mr)
-
-    status_val = w_perf.get("status", "READY")
-    mr = MetricResult(metric_code="MONITOR_STATUS", current_value=None,
-                      metric_detail={**detail, "category": "core", "computed": False,
-                                     "status": status_val, "reason": w_perf.get("reason")})
-    all_metrics.append(mr)
-    await service._persist_metric(monitoring_run_id, mr)
-
-    # 1e. 元数据字段
-    mr = MetricResult(metric_code="SAMPLE_SIZE",
-                      current_value=float(len(w_df)),
-                      metric_detail={"window_id": window_id, "category": "meta", "computed": False,
-                                     "bad_count": int(w_df["is_bad"].sum())})
-    all_metrics.append(mr)
-    await service._persist_metric(monitoring_run_id, mr)
-
-    w0_cols = set(w0_df.columns)
-    w_cols = set(w_df.columns)
-    missing = w0_cols - w_cols
-    new_cols = w_cols - w0_cols
-    schema_ok = len(missing) == 0 and len(new_cols) == 0
-    mr = MetricResult(metric_code="SCHEMA_CONSISTENCY",
-                      current_value=1.0 if schema_ok else 0.0,
-                      metric_detail={"window_id": window_id, "category": "meta", "computed": False,
-                                     "missing": list(missing), "new": list(new_cols)})
-    all_metrics.append(mr)
-    await service._persist_metric(monitoring_run_id, mr)
-
-    # ═══════════════════════════════════════════════════════════
-    # 2. 特征质量（×34 特征）— 每个 8 个指标
-    # ═══════════════════════════════════════════════════════════
-    for q in w_qual:
-        fname = q.get("feature_name", "?")
-        fd = {"window_id": window_id, "category": "quality", "feature_name": fname, "computed": True}
-        for key in ("missing_rate", "missing_rate_delta", "outlier_rate", "outlier_rate_delta",
-                     "dq_score", "dq_flag", "default_value_rate", "range_violation_rate",
-                     "unknown_category_rate"):
-            val = _safe_float(q.get(key)) if key != "dq_flag" else q.get(key)
-            if val is not None or key == "dq_flag":
-                mr = MetricResult(
-                    metric_code=f"Q_{key.upper()}", current_value=val if not isinstance(val, str) else None,
-                    metric_detail={**fd, "value_str": val if isinstance(val, str) else None})
-                all_metrics.append(mr)
-                await service._persist_metric(monitoring_run_id, mr)
-
-    # ═══════════════════════════════════════════════════════════
-    # 3. 特征漂移（×34 特征）— 每个 8 个指标
-    # ═══════════════════════════════════════════════════════════
-    for d in w_drift:
-        fname = d.get("feature_name", "?")
-        ftype = d.get("feature_type", "continuous")
-        fd = {"window_id": window_id, "category": "drift", "feature_name": fname,
-              "feature_type": ftype, "computed": True}
-        for key in ("psi", "js_divergence", "wasserstein_distance", "ks_statistic",
-                     "ks_p_value", "ks_q_value", "category_share_change", "unknown_category_rate"):
-            val = _safe_float(d.get(key))
-            if val is not None:
-                mr = MetricResult(metric_code=f"D_{key.upper()}", current_value=val,
-                                  metric_detail=fd)
-                all_metrics.append(mr)
-                await service._persist_metric(monitoring_run_id, mr)
-
-    # ═══════════════════════════════════════════════════════════
-    # 4. FEATURE_PSI（聚合）
-    # ═══════════════════════════════════════════════════════════
-    if len(w_drift) > 0:
-        drift_df_w = pd.DataFrame(w_drift)
-        psi_vals = drift_df_w["psi"].dropna()
-        mean_psi = _safe_float(psi_vals.mean()) if len(psi_vals) > 0 else None
-        max_psi = _safe_float(psi_vals.max()) if len(psi_vals) > 0 else None
-        mr = MetricResult(metric_code="FEATURE_PSI", current_value=mean_psi,
-                          metric_detail={"window_id": window_id, "category": "aggregate",
-                                         "max_psi": max_psi, "score_type": "feature",
-                                         "computed": True, "n_features": len(psi_vals)})
-        all_metrics.append(mr)
-        metric_id = await service._persist_metric(monitoring_run_id, mr)
-
-        rule = service.rules.get("FEATURE_PSI")
-        if rule and max_psi and max_psi > rule.warning_threshold:
-            triggered, sev = rule.evaluate(max_psi, max_psi)
-            if triggered and sev:
-                alert_type = await knowledge.resolve_alert("FEATURE_PSI", sev)
-                code = alert_type.alert_code if alert_type else "FEATURE_PSI_HIGH"
-                detail_alert = AlertDetail(
-                    alert_id=str(uuid.uuid4()), alert_code=code, severity=sev,
-                    object_type=ObjectType.FEATURE, object_code="ALL",
-                    metric_code="FEATURE_PSI", metric_version="V2",
-                    current_value=max_psi, baseline_value=mean_psi,
-                    delta=max_psi, threshold=rule.critical_threshold,
-                    rule_type=RuleType.SHIFT_THRESHOLD,
-                    threshold_rule_id=rule.rule_id, threshold_rule_version=rule.rule_version,
-                    availability_status=AvailabilityStatus.AVAILABLE,
-                    metric_detail={"max_psi": max_psi, "mean_psi": mean_psi, "window_id": window_id},
-                    created_at=datetime.now(timezone.utc),
-                )
-                triggered_alerts.append(detail_alert)
-                await service._persist_alert(monitoring_run_id, metric_id, mr, detail_alert)
-
-    return all_metrics, triggered_alerts
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -358,14 +435,11 @@ async def trigger_run(
     body: RunMonitoringRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """触发一次完整监控管道 — 每个 W1/W2/W3 窗口独立运行 _monitor_one。
+    """触发一次完整监控管道 — 调用 MonitoringService.run_full_pipeline()。
 
-    W0 做基线，W1/W2/W3 各自作为独立监控窗口。
-    指标按窗口分别持久化，Dashboard 按窗口分组展示。
+    管道：W0 基线 → W1+W2+W3 滚动窗口 → per-feature 漂移/质量 → 检测器 → Sentinel。
+    产出：monitoring_metrics + monitoring_feature_drift + 诊断时间线证据。
     """
-    from pathlib import Path
-    from ..services.monitoring.pipeline_core import _monitor_one
-
     driver = await get_neo4j_driver()
     knowledge = KnowledgeService(driver)
     service = MonitoringService(db, knowledge)
@@ -375,114 +449,23 @@ async def trigger_run(
     w2_df = load_window_with_predictions("W2", body.model_id)
     w3_df = load_window_with_predictions("W3", body.model_id)
 
-    categorical = {
-        "device_type": [0, 1], "education_level": [1, 2, 3, 4, 5],
-        "marital_status": [0, 1], "gender": [0, 1],
-        "city_tier": [1, 2, 3, 4], "repayment_period": [6, 12, 24, 36],
-    }
-
-    # ── W0 基线 ──
-    feature_names = [c for c in w0_df.columns
-                     if c not in ("sample_id", "apply_time", "is_bad", "y_true",
-                                  "risk_score", "y_pred_proba",
-                                  "apply_hour_sin", "apply_hour_cos",
-                                  "apply_weekday_sin", "apply_weekday_cos",
-                                  "apply_is_weekend", "apply_is_night")]
-    reference = w0_df.drop(columns=["risk_score"]) if "risk_score" in w0_df.columns else w0_df
-
-    baseline = service.build_baseline(
-        w0_data=w0_df, model_id=body.model_id, model_version=body.champion_version,
-        feature_names=feature_names, categorical_features=categorical,
+    result = await service.run_full_pipeline(
+        model_id=body.model_id,
+        champion_version=body.champion_version,
+        w0_df=w0_df, w1_df=w1_df, w2_df=w2_df, w3_df=w3_df,
+        trace_id=request_trace_id(request),
     )
-
-    reference_scores = pd.Series(w0_df["y_pred_proba"])
-    baseline_profile = pd.read_parquet(Path(baseline.feature_profile_uri))
-
-    # ── 创建监控运行 ──
-    trace_id = request_trace_id(request)
-    run = await service.repo.create_run(
-        model_id=body.model_id, champion_version=body.champion_version,
-        baseline_window_id="W0", current_window_id="W3",
-        data_track="NATURAL", trace_id=trace_id,
-    )
-    monitoring_run_id = run["monitoring_run_id"]
-
-    # ── 每个窗口独立运行 _monitor_one ──
-    WINDOWS = [("W1", w1_df), ("W2", w2_df), ("W3", w3_df)]
-
-    all_metrics: list[MetricResult] = []
-    all_alerts: list[AlertDetail] = []
-    all_drift_rows: list[dict] = []
-    all_quality_rows: list[dict] = []
-
-    for window_id, w_df in WINDOWS:
-        w_source = w_df.drop(columns=["risk_score"]) if "risk_score" in w_df.columns else w_df
-        w_predictions = w_df[["sample_id", "risk_score"]].copy()
-
-        w_perf, w_qual, w_drift = _monitor_one(
-            source=w_source, predictions=w_predictions,
-            monitor_window_id=window_id,
-            context=baseline, baseline=baseline,
-            reference=reference, reference_scores=reference_scores,
-            baseline_profile=baseline_profile,
-            data_track="NATURAL", trace_id=trace_id,
-            min_samples=50, min_bad=1,
-        )
-
-        metrics, alerts = await _persist_window_metrics(
-            service, monitoring_run_id, window_id, w_df, w0_df,
-            w_perf, w_qual, w_drift, baseline, knowledge,
-        )
-        all_metrics.extend(metrics)
-        all_alerts.extend(alerts)
-        all_drift_rows.extend(w_drift)
-        all_quality_rows.extend(w_qual)
-
-    # ── 持久化 per-feature drift ──
-    if all_drift_rows:
-        drift_count = await service.repo.batch_insert_feature_drift(
-            monitoring_run_id, all_drift_rows, all_quality_rows,
-        )
-
-    # ── 完成运行 ──
-    has_alerts = len(all_alerts) > 0
-    max_sev = None
-    if all_alerts:
-        sev_order = {"CRITICAL": 4, "HIGH": 3, "WARNING": 2, "INFO": 1}
-        max_sev = max(all_alerts, key=lambda a: sev_order.get(a.severity.value, 0)).severity
-
-    alert_context = AlertContext(
-        schema_version="V2-WP08",
-        trace_id=trace_id, monitoring_run_id=monitoring_run_id,
-        model_id=body.model_id, model_version=body.champion_version,
-        monitor_window_id="W1_W2_W3", baseline_id=baseline.baseline_id,
-        data_track=DataTrack.NATURAL,
-        alert_details=all_alerts,
-    )
-    await service.repo.complete_run(
-        monitoring_run_id=monitoring_run_id, overall_status="COMPLETED",
-        alert_count=len(all_alerts),
-        max_alert_severity=max_sev.value if max_sev else None,
-        alert_context_json=alert_context.model_dump(),
-    )
-    await db.commit()
-
-    window_counts = {}
-    for m in all_metrics:
-        wid = m.metric_detail.get("window_id", "?")
-        window_counts[wid] = window_counts.get(wid, 0) + 1
 
     return _envelope(
         request,
         {
-            "monitoring_run_id": monitoring_run_id,
-            "total_metrics": len(all_metrics),
-            "metrics_per_window": window_counts,
-            "has_alerts": has_alerts,
-            "alert_count": len(all_alerts),
-            "max_alert_severity": max_sev.value if max_sev else None,
+            "monitoring_run_id": result.monitoring_run_id,
+            "has_alerts": result.has_alerts,
+            "alert_count": result.alert_count,
+            "max_alert_severity": result.max_alert_severity.value if result.max_alert_severity else None,
+            "total_metrics": len(result.metrics),
         },
-        message=f"3-window pipeline completed ({len(all_metrics)} metrics)",
+        message="full pipeline completed",
     )
 
 

@@ -13,6 +13,24 @@ class MonitoringRepo:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    # ── data_windows lookup ──
+
+    async def get_data_window(self, window_id: str) -> dict | None:
+        """查询 model_registry.data_windows 获取窗口真实权限和成熟时间。"""
+        result = await self.session.execute(
+            text("""
+                SELECT window_id, window_name, start_time, end_time,
+                       allows_monitoring_label, allows_diagnosis_label,
+                       allows_iteration_label, allows_deployment_label,
+                       allows_training, is_frozen
+                FROM model_registry.data_windows
+                WHERE window_id = :wid
+            """),
+            {"wid": window_id},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
     # ── monitoring_runs ──
 
     async def create_run(
@@ -124,6 +142,31 @@ class MonitoringRepo:
             },
         )
         return {"metric_id": new_id}
+
+    async def update_metric_triggered(self, metric_id: str, triggered: bool) -> None:
+        """更新指标的 triggered 字段为真实的阈值触发状态。"""
+        await self.session.execute(
+            text("UPDATE monitoring.monitoring_metrics SET triggered = :trig WHERE metric_id = :id"),
+            {"id": metric_id, "trig": triggered},
+        )
+
+    async def update_persistence_judgment(
+        self, monitoring_run_id: str, judgment_json: dict, diagnosis_status: str,
+    ) -> None:
+        """写入 B1 持续性判定结果。"""
+        await self.session.execute(
+            text("""
+                UPDATE monitoring.monitoring_runs
+                SET persistence_judgment_json = CAST(:judgment AS JSONB),
+                    diagnosis_status = :status
+                WHERE monitoring_run_id = :id
+            """),
+            {
+                "id": monitoring_run_id,
+                "judgment": json.dumps(judgment_json, ensure_ascii=False, default=str),
+                "status": diagnosis_status,
+            },
+        )
 
     async def get_metrics(self, monitoring_run_id: str) -> list[dict]:
         result = await self.session.execute(

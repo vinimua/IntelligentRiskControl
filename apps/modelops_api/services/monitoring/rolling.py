@@ -51,3 +51,53 @@ def iter_rolling_windows(
             yield start, end, subset
 
         start += pd.Timedelta(days=step_days)
+
+
+def iter_end_aligned_windows(
+    frame: pd.DataFrame,
+    window_days: int = 30,
+    step_days: int = 7,
+    require_full_window: bool = True,
+) -> Iterator[tuple[pd.Timestamp, pd.Timestamp, pd.DataFrame]]:
+    """从数据最新日期往回对齐，生成 (start, end, subset) 重叠评估点。
+
+    与 iter_rolling_windows（从头往前滚）不同：本函数从 coverage_end 往回，
+    每 step_days 一个评估点，窗口始终 window_days 天。
+    最早的窗口覆盖不满 window_days 时丢弃。
+
+    Args:
+        frame: 含 apply_time 列的时间序列数据。
+        window_days: 每个评估窗口的天数（常见值：30）。
+        step_days: 评估点间隔天数（常见值：7）。
+        require_full_window: True 时丢弃 start < 数据起点的窗口。
+
+    Yields:
+        (start, end, subset) — 从最新评估点开始往前。
+    """
+    if frame.empty:
+        return
+
+    ordered = frame.sort_values("apply_time").copy()
+    ordered["apply_time"] = pd.to_datetime(ordered["apply_time"])
+
+    data_start = ordered["apply_time"].min().normalize()
+    final = ordered["apply_time"].max()
+    coverage_end = final.normalize() + pd.Timedelta(days=1)
+
+    # 第一个评估点 end = coverage_end，start = end - window_days
+    current_end = coverage_end
+
+    while True:
+        current_start = current_end - pd.Timedelta(days=window_days)
+        if require_full_window and current_start < data_start:
+            break
+
+        subset = ordered[
+            (ordered["apply_time"] >= current_start)
+            & (ordered["apply_time"] < current_end)
+        ].copy()
+
+        if not subset.empty:
+            yield current_start, current_end, subset
+
+        current_end -= pd.Timedelta(days=step_days)

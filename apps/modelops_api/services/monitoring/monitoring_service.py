@@ -56,7 +56,7 @@ from .drift.algorithms import (
 )
 from .drift.output_monitor import output_metrics
 from .detectors.runner import run_detectors
-from .rolling import iter_rolling_windows
+from .rolling import iter_rolling_windows, iter_end_aligned_windows
 from .sentinel.alert import AlertEvent, alert_summary, build_alerts
 from .sentinel.feature_builder import (
     build_monitor_feature_vector,
@@ -66,6 +66,81 @@ from .sentinel.inference import SentinelBundle, infer_sentinel
 from .trend_features import trailing_slope
 
 logger = structlog.get_logger(__name__)
+
+
+# ── 7D/30D 单窗口处理辅助函数 ──
+
+def _process_single_window(
+    start, end, window, baseline, reference_scores,
+    perf_rows: list, qual_rows: list, drift_rows: list,
+    *, model_id: str, champion_version: str, trace_id: str,
+) -> None:
+    """处理单个滚动窗口：性能 + 漂移 + 质量 → 追加到 perf_rows/qual_rows/drift_rows。"""
+    w_days = (end - start).days
+    window_id = f"{w_days}D_{start:%Y%m%d}_{end:%Y%m%d}"
+    sample_count = len(window)
+    bad_count = int(window["is_bad"].sum()) if "is_bad" in window.columns else None
+
+    label_ready = (
+        "is_bad" in window.columns and "y_pred_proba" in window.columns
+        and sample_count >= 50 and bad_count is not None and bad_count >= 1
+    )
+    if label_ready:
+        perf = compute_performance_metrics(window["is_bad"], window["y_pred_proba"])
+    else:
+        perf = {k: None for k in ("auc", "ks", "pr_auc", "brier", "ece", "bad_recall")}
+
+    out = output_metrics(window["y_pred_proba"], reference_scores, baseline.score_edges)
+
+    common = {
+        "trace_id": trace_id, "model_id": model_id, "model_version": champion_version,
+        "baseline_id": baseline.baseline_id, "baseline_version": baseline.baseline_version,
+        "monitor_window_id": window_id,
+        "window_start": start, "window_end": end,
+        "window_days": w_days,
+        "sample_count": sample_count, "bad_count": bad_count,
+        "data_track": "NATURAL",
+        "scenario_id": float("nan"), "scenario_instance_id": float("nan"),
+    }
+    perf_rows.append({**common, **perf, **out})
+
+    p_positions: list[int] = []
+    p_values: list[float | None] = []
+
+    w0_df = baseline._w0_df if hasattr(baseline, '_w0_df') else None
+
+    for fname in baseline.feature_names:
+        rule = baseline.binning_rules_json.get(fname)
+        if rule is None or fname not in window.columns:
+            continue
+
+        if fname in baseline.feature_profiles:
+            quality = feature_quality(
+                window[fname], pd.Series(baseline.feature_profiles[fname]),
+                rule["feature_type"],
+            )
+            qual_rows.append({**common, "feature_name": fname, **quality})
+
+        w0_col = w0_df[fname] if w0_df is not None and fname in w0_df.columns else None
+        if w0_col is not None:
+            if rule["feature_type"] == "categorical":
+                drift = categorical_drift(w0_col, window[fname], rule["categories"])
+                row = {"feature_name": fname, "feature_type": "categorical", **drift,
+                       "wasserstein_distance": None, "ks_statistic": None,
+                       "ks_p_value": None, "ks_q_value": None}
+            else:
+                drift = continuous_drift(w0_col, window[fname], rule["edges"])
+                row = {"feature_name": fname, "feature_type": "continuous", **drift,
+                       "category_share_change": None, "unknown_category_rate": 0.0,
+                       "ks_q_value": None}
+                if row.get("ks_p_value") is not None:
+                    p_positions.append(len(drift_rows))
+                    p_values.append(row["ks_p_value"])
+            drift_rows.append({**common, **row})
+
+    for pos, q_val in zip(p_positions, benjamini_hochberg(p_values)):
+        drift_rows[pos]["ks_q_value"] = q_val
+
 
 # MetricDirection → RuleType 映射
 _DIRECTION_TO_RULE: dict[MetricDirection, RuleType] = {
@@ -144,7 +219,6 @@ class MonitoringService:
         # ③ 遍历指标计算器
         all_metrics: list[MetricResult] = []
         triggered_alerts: list[AlertDetail] = []
-
         # 需要标签的指标（后续可从 registry 声明派生）
         _LABEL_DEPENDENT_METRICS = {"AUC", "KS"}
 
@@ -182,12 +256,10 @@ class MonitoringService:
                     alert_type = await self.knowledge.resolve_alert(metric_code, severity)
 
                     alert_code = alert_type.alert_code if alert_type else f"ANOMALY_{metric_code}"
-                    resolved_severity = alert_type.severity if alert_type else severity
-
                     alert_detail = AlertDetail(
                         alert_id=str(uuid.uuid4()),
                         alert_code=alert_code,
-                        severity=resolved_severity,
+                        severity=severity,
                         object_type=ObjectType.MODEL,
                         object_code=model_id,
                         metric_code=metric_code,
@@ -234,7 +306,16 @@ class MonitoringService:
             alert_details=triggered_alerts,
         )
 
-        # ⑦ 完成 run
+        # ⑦ B1 持续性判定
+        from .persistence_judgment import PersistenceJudgmentService
+        judgment_svc = PersistenceJudgmentService(self.session)
+        judgment = await judgment_svc.judge(monitoring_run_id)
+        diagnosis_status = "PENDING" if judgment.trigger_diagnosis else "SKIPPED"
+        await self.repo.update_persistence_judgment(
+            monitoring_run_id, judgment.__dict__, diagnosis_status,
+        )
+
+        # ⑧ 完成 run
         await self.repo.complete_run(
             monitoring_run_id=monitoring_run_id,
             overall_status="COMPLETED",
@@ -258,6 +339,50 @@ class MonitoringService:
             alerts=triggered_alerts,
             metrics=[_metric_to_dict(m) for m in all_metrics],
         )
+
+    async def _emit_alert(
+        self, monitoring_run_id: str, metric_id: str, mr: MetricResult,
+        rule, triggered_alerts: list, *,
+        object_type: ObjectType = ObjectType.MODEL, object_code: str = "",
+    ) -> None:
+        """统一告警生成：阈值评估 → KG查alert_code → 持久化 → 更新triggered。severity严格使用规则档位。"""
+        if rule is None or mr.availability_status != AvailabilityStatus.AVAILABLE:
+            return
+        triggered, sev = rule.evaluate(mr.delta, mr.current_value)
+        if not (triggered and sev):
+            return
+        alert_type = await self.knowledge.resolve_alert(mr.metric_code, sev)
+        metric_detail = dict(mr.metric_detail or {})
+        value = mr.delta if mr.delta is not None else mr.current_value
+        blocking_threshold = getattr(rule, "blocking_threshold", None)
+        if blocking_threshold is not None and value is not None:
+            try:
+                if abs(float(value)) >= float(blocking_threshold):
+                    metric_detail["blocking"] = True
+                    metric_detail["blocking_threshold"] = float(blocking_threshold)
+                    metric_detail["blocking_reason"] = f"{mr.metric_code}_GE_BLOCKING_THRESHOLD"
+            except (TypeError, ValueError):
+                pass
+        metric_detail["alert_source"] = (
+            "KG" if (alert_type and getattr(alert_type, "from_neo4j", False)) else "FALLBACK"
+        )
+        detail = AlertDetail(
+            alert_id=str(uuid.uuid4()),
+            alert_code=alert_type.alert_code if alert_type else f"ANOMALY_{mr.metric_code}",
+            severity=sev,
+            object_type=object_type, object_code=object_code,
+            metric_code=mr.metric_code, metric_version="V2",
+            baseline_value=mr.baseline_value, current_value=mr.current_value,
+            delta=mr.delta, threshold=rule.critical_threshold,
+            rule_type=_DIRECTION_TO_RULE.get(rule.direction, RuleType.SHIFT_THRESHOLD),
+            threshold_rule_id=rule.rule_id, threshold_rule_version=rule.rule_version,
+            availability_status=mr.availability_status,
+            metric_detail=metric_detail,
+            created_at=datetime.now(timezone.utc),
+        )
+        triggered_alerts.append(detail)
+        await self._persist_alert(monitoring_run_id, metric_id, mr, detail)
+        await self.repo.update_metric_triggered(metric_id, True)
 
     # ── 完整 WP02-WP08 管道（与交接包 pipeline.py 一致） ──
 
@@ -309,6 +434,7 @@ class MonitoringService:
             w0_data=w0_df, model_id=model_id, model_version=champion_version,
             feature_names=feature_names, categorical_features=categorical_features,
         )
+        baseline._w0_df = w0_df
 
         # ── WP04-WP05: 滚动窗口 + 漂移 ──
         all_data = pd.concat([w1_df, w2_df, w3_df], ignore_index=True).sort_values("apply_time")
@@ -384,9 +510,64 @@ class MonitoringService:
             for pos, q_val in zip(p_positions, benjamini_hochberg(p_values)):
                 drift_rows[pos]["ks_q_value"] = q_val
 
+        # ── 30D 评估点（从最新往回，每 7 天一个，窗口 30 天）──
+        for start, end, window in iter_end_aligned_windows(all_data, window_days=30, step_days=7):
+            _process_single_window(
+                start, end, window, baseline, reference_scores,
+                perf_rows, qual_rows, drift_rows,
+                model_id=model_id, champion_version=champion_version,
+                trace_id=trace_id,
+            )
+
         perf_df = pd.DataFrame(perf_rows)
         qual_df = pd.DataFrame(qual_rows)
         drift_df = pd.DataFrame(drift_rows)
+        triggered_alerts: list[AlertDetail] = []
+
+        w0_schema_cols = set(w0_df.columns) - {"y_pred_proba", "risk_score"}
+        w3_schema_cols = set(w3_df.columns) - {"y_pred_proba", "risk_score"}
+        schema_inconsistent_value = 1.0 if (w0_schema_cols - w3_schema_cols or w3_schema_cols - w0_schema_cols) else 0.0
+
+        async def _persist_event_metric(
+            metric_code: str,
+            current_value: float | None,
+            baseline_value: float | None,
+            delta_value: float | None,
+            detail: dict,
+            availability: AvailabilityStatus = AvailabilityStatus.AVAILABLE,
+            object_type: ObjectType = ObjectType.MODEL,
+            object_code: str | None = None,
+        ) -> str:
+            mr = MetricResult(
+                metric_code=metric_code,
+                baseline_value=baseline_value,
+                current_value=current_value,
+                delta=delta_value,
+                availability_status=availability,
+                metric_detail=detail,
+            )
+            result = await self.repo.insert_metric(
+                monitoring_run_id=monitoring_run_id,
+                metric_code=metric_code,
+                metric_version="V2_EVENT_TIME",
+                object_type=object_type.value,
+                object_code=object_code or model_id,
+                baseline_value=baseline_value,
+                current_value=current_value,
+                delta=delta_value,
+                availability_status=availability.value,
+                metric_detail=detail,
+            )
+            await self._emit_alert(
+                monitoring_run_id,
+                result["metric_id"],
+                mr,
+                self.rules.get(metric_code),
+                triggered_alerts,
+                object_type=object_type,
+                object_code=object_code or model_id,
+            )
+            return result["metric_id"]
 
         # Diagnosis V2 contract: persist the complete model-specific timeline.
         # A diagnosis at event time T may only read four historical,
@@ -414,22 +595,87 @@ class MonitoringService:
                     if current_value is not None and baseline_value is not None
                     else None
                 )
-                await self.repo.insert_metric(
-                    monitoring_run_id=monitoring_run_id,
-                    metric_code=code,
-                    metric_version="V2_EVENT_TIME",
-                    object_type="MODEL",
-                    object_code=model_id,
-                    baseline_value=baseline_value,
-                    current_value=current_value,
-                    delta=delta_value,
-                    availability_status=(
-                        AvailabilityStatus.AVAILABLE.value
+                await _persist_event_metric(
+                    code,
+                    current_value,
+                    baseline_value,
+                    delta_value,
+                    window_detail,
+                    (
+                        AvailabilityStatus.AVAILABLE
                         if current_value is not None
-                        else AvailabilityStatus.SAMPLE_TOO_SMALL.value
+                        else AvailabilityStatus.SAMPLE_TOO_SMALL
                     ),
-                    metric_detail=window_detail,
                 )
+
+            score_psi = row.get("prediction_psi")
+            if score_psi is not None and pd.notna(score_psi):
+                await _persist_event_metric(
+                    "SCORE_PSI", float(score_psi), None, None,
+                    {**window_detail, "category": "distribution"},
+                )
+
+            await _persist_event_metric(
+                "SAMPLE_SIZE", float(row["sample_count"]), None, None,
+                {**window_detail, "category": "guardrail"},
+            )
+            await _persist_event_metric(
+                "SCHEMA_CONSISTENCY", schema_inconsistent_value, None, None,
+                {**window_detail, "category": "guardrail"},
+            )
+
+            wid = row["monitor_window_id"]
+            window_drift = (
+                drift_df[drift_df["monitor_window_id"] == wid]
+                if not drift_df.empty and "monitor_window_id" in drift_df.columns
+                else pd.DataFrame()
+            )
+            if not window_drift.empty and "psi" in window_drift.columns:
+                psi_vals = window_drift["psi"].dropna()
+                if len(psi_vals) > 0:
+                    max_psi = float(psi_vals.max())
+                    mean_psi = float(psi_vals.mean())
+                    await _persist_event_metric(
+                        "FEATURE_PSI",
+                        max_psi,
+                        mean_psi,
+                        None,
+                        {
+                            **window_detail,
+                            "category": "drift",
+                            "max_psi": max_psi,
+                            "mean_psi": mean_psi,
+                            "n_features": int(len(psi_vals)),
+                        },
+                        object_type=ObjectType.FEATURE,
+                        object_code="ALL",
+                    )
+
+            window_qual = (
+                qual_df[qual_df["monitor_window_id"] == wid]
+                if not qual_df.empty and "monitor_window_id" in qual_df.columns
+                else pd.DataFrame()
+            )
+            if not window_qual.empty and "missing_rate" in window_qual.columns:
+                miss_vals = window_qual["missing_rate"].dropna()
+                if len(miss_vals) > 0:
+                    await _persist_event_metric(
+                        "MISSING_RATE",
+                        float(miss_vals.max()),
+                        None,
+                        None,
+                        {**window_detail, "category": "quality", "source": "qual_df_window_max"},
+                    )
+            if not window_qual.empty and "outlier_rate" in window_qual.columns:
+                out_vals = window_qual["outlier_rate"].dropna()
+                if len(out_vals) > 0:
+                    await _persist_event_metric(
+                        "OUTLIER_RATE",
+                        float(out_vals.max()),
+                        None,
+                        None,
+                        {**window_detail, "category": "quality", "source": "qual_df_window_max"},
+                    )
 
         await self.repo.batch_insert_feature_drift(
             monitoring_run_id,
@@ -479,7 +725,13 @@ class MonitoringService:
 
         # ── 汇总为 API 指标格式 ──
         all_metrics: list[MetricResult] = []
-        triggered_alerts: list[AlertDetail] = []
+        metric_ids: dict[int, str] = {}
+
+        async def _persist_summary_metric(mr: MetricResult, *, triggered: bool = False) -> str:
+            all_metrics.append(mr)
+            metric_id = await self._persist_metric(monitoring_run_id, mr, triggered=triggered)
+            metric_ids[id(mr)] = metric_id
+            return metric_id
 
         latest = perf_df.iloc[-1] if len(perf_df) > 0 else None
 
@@ -492,16 +744,14 @@ class MonitoringService:
             mr = MetricResult(metric_code=code, current_value=cur_val, baseline_value=base_val,
                               delta=delta_val,
                               availability_status=AvailabilityStatus.AVAILABLE if cur_val is not None else AvailabilityStatus.SAMPLE_TOO_SMALL)
-            all_metrics.append(mr)
-            metric_id = await self._persist_metric(monitoring_run_id, mr)
+            await _persist_summary_metric(mr)
 
         # BAD_RATE
         cur_br = float(drift_df["bad_count"].iloc[-1] / max(1, drift_df["sample_count"].iloc[-1])) if not drift_df.empty else None
         base_br = baseline.performance_reference_json.get("bad_rate")
         mr = MetricResult(metric_code="BAD_RATE", current_value=cur_br, baseline_value=base_br,
                           delta=(cur_br - base_br) if cur_br is not None and base_br is not None else None)
-        all_metrics.append(mr)
-        await self._persist_metric(monitoring_run_id, mr)
+        await _persist_summary_metric(mr)
 
         # 漂移汇总
         if not drift_df.empty:
@@ -509,53 +759,33 @@ class MonitoringService:
             mean_psi = float(psi_vals.mean())
             max_psi = float(psi_vals.max())
 
-            mr = MetricResult(metric_code="FEATURE_PSI", current_value=mean_psi,
-                              metric_detail={"max_psi": max_psi, "window_count": len(perf_df)})
-            all_metrics.append(mr)
-            metric_id = await self._persist_metric(monitoring_run_id, mr)
-
-            rule = self.rules.get("FEATURE_PSI")
-            if rule and max_psi > rule.warning_threshold:
-                triggered, sev = rule.evaluate(max_psi, max_psi)
-                if triggered and sev:
-                    alert_type = await self.knowledge.resolve_alert("FEATURE_PSI", sev)
-                    code = alert_type.alert_code if alert_type else "FEATURE_PSI_HIGH"
-                    detail = AlertDetail(
-                        alert_id=str(uuid.uuid4()), alert_code=code, severity=sev,
-                        object_type=ObjectType.FEATURE, object_code="ALL",
-                        metric_code="FEATURE_PSI", metric_version="V2",
-                        current_value=max_psi, baseline_value=mean_psi,
-                        delta=max_psi, threshold=rule.critical_threshold,
-                        rule_type=RuleType.SHIFT_THRESHOLD,
-                        threshold_rule_id=rule.rule_id, threshold_rule_version=rule.rule_version,
-                        availability_status=AvailabilityStatus.AVAILABLE,
-                        metric_detail={"max_psi": max_psi, "mean_psi": mean_psi},
-                        created_at=datetime.now(timezone.utc),
-                    )
-                    triggered_alerts.append(detail)
-                    await self._persist_alert(monitoring_run_id, metric_id, mr, detail)
+            mr = MetricResult(metric_code="FEATURE_PSI", current_value=max_psi,
+                              baseline_value=mean_psi, delta=None,
+                              metric_detail={"max_psi": max_psi, "mean_psi": mean_psi,
+                                             "window_count": len(perf_df)})
+            metric_id = await _persist_summary_metric(mr, triggered=False)
+            await self._emit_alert(monitoring_run_id, metric_id, mr,
+                                   self.rules.get("FEATURE_PSI"), triggered_alerts,
+                                   object_type=ObjectType.FEATURE, object_code="ALL")
 
             for code, col in [("MAX_FEATURE_PSI_7D", "max_feature_psi_7d"),
                               ("MAX_FEATURE_PSI_30D", "max_feature_psi_30d")]:
                 val = float(max_psi)
                 mr2 = MetricResult(metric_code=code, current_value=val)
-                all_metrics.append(mr2)
-                await self._persist_metric(monitoring_run_id, mr2)
+                await _persist_summary_metric(mr2)
 
         # SCORE_PSI
         if latest is not None and "prediction_psi" in latest.index:
             score_psi_val = float(latest["prediction_psi"]) if pd.notna(latest["prediction_psi"]) else None
             mr = MetricResult(metric_code="SCORE_PSI", current_value=score_psi_val)
-            all_metrics.append(mr)
-            await self._persist_metric(monitoring_run_id, mr)
+            await _persist_summary_metric(mr)
 
         # 数据质量
         if not qual_df.empty:
             dq_scores = qual_df["dq_score"].dropna()
             mean_dq = float(dq_scores.mean()) if len(dq_scores) > 0 else None
             mr = MetricResult(metric_code="DATA_QUALITY_SCORE", current_value=mean_dq)
-            all_metrics.append(mr)
-            await self._persist_metric(monitoring_run_id, mr)
+            await _persist_summary_metric(mr)
 
         # 预测均值
         if latest is not None and "prediction_mean" in latest.index:
@@ -564,29 +794,59 @@ class MonitoringService:
             mr = MetricResult(metric_code="PREDICTION_MEAN", current_value=cur_pm,
                               baseline_value=base_pm,
                               delta=(cur_pm - base_pm) if cur_pm is not None and base_pm is not None else None)
-            all_metrics.append(mr)
-            await self._persist_metric(monitoring_run_id, mr)
+            await _persist_summary_metric(mr)
 
-        # 元数据指标
-        for code, val in [("SAMPLE_SIZE", float(len(w3_df))),
-                          ("SCHEMA_CONSISTENCY", 0.0),
-                          ("MISSING_RATE", 0.0),
-                          ("OUTLIER_RATE", 0.0)]:
-            mr = MetricResult(metric_code=code, current_value=val)
-            all_metrics.append(mr)
-            await self._persist_metric(monitoring_run_id, mr)
+        # 元数据指标（SAMPLE_SIZE / SCHEMA / MISSING_RATE / OUTLIER_RATE 从真实数据计算 + 告警）
+        mr = MetricResult(metric_code="SAMPLE_SIZE", current_value=float(len(w3_df)))
+        mid = await _persist_summary_metric(mr, triggered=False)
+        await self._emit_alert(monitoring_run_id, mid, mr, self.rules.get("SAMPLE_SIZE"), triggered_alerts)
+
+        mr = MetricResult(metric_code="SCHEMA_CONSISTENCY", current_value=schema_inconsistent_value)
+        mid = await _persist_summary_metric(mr, triggered=False)
+        await self._emit_alert(monitoring_run_id, mid, mr, self.rules.get("SCHEMA_CONSISTENCY"), triggered_alerts)
+
+        max_missing = 0.0
+        if not qual_df.empty and "missing_rate" in qual_df.columns:
+            max_missing = float(qual_df["missing_rate"].max())
+        mr = MetricResult(metric_code="MISSING_RATE", current_value=max_missing,
+                          metric_detail={"source": "qual_df_max", "window_count": len(perf_df)})
+        mid = await _persist_summary_metric(mr, triggered=False)
+        await self._emit_alert(monitoring_run_id, mid, mr, self.rules.get("MISSING_RATE"), triggered_alerts)
+
+        max_outlier = 0.0
+        if not qual_df.empty and "outlier_rate" in qual_df.columns:
+            max_outlier = float(qual_df["outlier_rate"].max())
+        mr = MetricResult(metric_code="OUTLIER_RATE", current_value=max_outlier,
+                          metric_detail={"source": "qual_df_max", "window_count": len(perf_df)})
+        mid = await _persist_summary_metric(mr, triggered=False)
+        await self._emit_alert(monitoring_run_id, mid, mr, self.rules.get("OUTLIER_RATE"), triggered_alerts)
 
         # AUC 趋势斜率
         if auc_slope is not None:
-            all_metrics.append(MetricResult(metric_code="AUC_TREND", current_value=auc_slope))
+            await _persist_summary_metric(MetricResult(metric_code="AUC_TREND", current_value=auc_slope))
 
         # 检测器汇总
         if not detector_df.empty:
             alarm_count = int(detector_df["alarm_flag"].sum())
             mr = MetricResult(metric_code="DETECTOR_ALARMS", current_value=float(alarm_count),
                               metric_detail={"detector_df_rows": len(detector_df)})
-            all_metrics.append(mr)
-            await self._persist_metric(monitoring_run_id, mr)
+            await _persist_summary_metric(mr)
+
+        # ── 统一阈值评估：遍历未单独处理告警的指标，套用规则 + _emit_alert ──
+        _already_alerted = {"FEATURE_PSI", "MISSING_RATE", "OUTLIER_RATE",
+                            "SCHEMA_CONSISTENCY", "SAMPLE_SIZE", "DETECTOR_ALARMS",
+                            "AUC_TREND", "MAX_FEATURE_PSI_7D", "MAX_FEATURE_PSI_30D"}
+        for mr in all_metrics:
+            if mr.metric_code in _already_alerted:
+                continue
+            rule = self.rules.get(mr.metric_code)
+            if rule and mr.availability_status == AvailabilityStatus.AVAILABLE:
+                mid = metric_ids.get(id(mr))
+                if mid is None:
+                    mid = await self._persist_metric(monitoring_run_id, mr, triggered=False)
+                    metric_ids[id(mr)] = mid
+                await self._emit_alert(monitoring_run_id, mid, mr, rule, triggered_alerts,
+                                       object_code=model_id)
 
         # ── 告警组装 ──
         has_alerts = len(triggered_alerts) > 0
@@ -605,6 +865,19 @@ class MonitoringService:
             top_signals=[],
             alert_details=triggered_alerts,
         )
+
+        # ── B1 持续性判定 ──
+        from .persistence_judgment import PersistenceJudgmentService
+        judgment_svc = PersistenceJudgmentService(self.session)
+        judgment = await judgment_svc.judge(monitoring_run_id)
+        diagnosis_status = "PENDING" if judgment.trigger_diagnosis else "SKIPPED"
+        await self.repo.update_persistence_judgment(
+            monitoring_run_id, judgment.__dict__, diagnosis_status,
+        )
+        logger.info("persistence_judgment_complete",
+                     monitoring_run_id=monitoring_run_id,
+                     trigger_diagnosis=judgment.trigger_diagnosis,
+                     decay_degree=judgment.decay_degree)
 
         await self.repo.complete_run(
             monitoring_run_id=monitoring_run_id, overall_status="COMPLETED",

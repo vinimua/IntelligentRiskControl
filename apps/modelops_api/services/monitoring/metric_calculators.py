@@ -236,12 +236,16 @@ def calc_feature_psi(baseline_data: list[dict], current_data: list[dict]) -> Met
 
     mean_psi = float(np.mean(psi_values))
     max_psi = float(np.max(psi_values))
+    # 使用 max 作为告警触发值，避免关键特征漂移被大量稳定特征稀释
     return MetricResult(
         metric_code="FEATURE_PSI",
-        current_value=mean_psi,
+        current_value=max_psi,
+        baseline_value=mean_psi,
         metric_detail={
+            "mean_psi": mean_psi,
             "max_psi": max_psi,
-            "per_column_psi": dict(zip(feature_cols[:10], psi_values[:10])),
+            "max_psi_column": feature_cols[psi_values.index(max_psi)] if psi_values else None,
+            "per_column_psi": dict(zip(feature_cols[:15], psi_values[:15])),
         },
     )
 
@@ -284,17 +288,28 @@ def calc_missing_rate(baseline_data: list[dict], current_data: list[dict]) -> Me
     baseline_missing = _column_missing_rates(baseline_data, cols)
     current_missing = _column_missing_rates(current_data, cols)
 
-    deltas = []
+    abs_deltas = []
+    signed_deltas = []
     for col in cols:
         c_rate = current_missing.get(col, 0.0)
         b_rate = baseline_missing.get(col, 0.0)
-        deltas.append(c_rate - b_rate)
+        signed_deltas.append(c_rate - b_rate)
+        abs_deltas.append(abs(c_rate - b_rate))
 
-    mean_delta = float(np.mean(deltas)) if deltas else 0.0
+    # 使用绝对值均值，避免增减抵消
+    mean_abs_delta = float(np.mean(abs_deltas)) if abs_deltas else 0.0
+    max_abs_delta = float(np.max(abs_deltas)) if abs_deltas else 0.0
+    max_col = cols[abs_deltas.index(max_abs_delta)] if abs_deltas else None
     return MetricResult(
         metric_code="MISSING_RATE",
-        current_value=mean_delta,
-        metric_detail={"per_column": dict(zip(cols[:20], deltas[:20]))},
+        current_value=max_abs_delta,
+        baseline_value=float(np.mean([abs(d) for d in signed_deltas[:5]])) if signed_deltas else 0.0,
+        metric_detail={
+            "mean_abs_delta": mean_abs_delta,
+            "max_abs_delta": max_abs_delta,
+            "max_abs_column": max_col,
+            "signed_deltas": dict(zip(cols[:20], signed_deltas[:20])),
+        },
     )
 
 
@@ -391,31 +406,67 @@ def calc_prediction_mean(baseline_data: list[dict], current_data: list[dict]) ->
     )
 
 
+def _filter_by_days(data: list[dict], days: int) -> list[dict]:
+    """按 apply_time 过滤最近 N 天数据。"""
+    import datetime as _dt
+    if not data or "apply_time" not in data[0]:
+        return data
+    try:
+        timestamps = []
+        for row in data:
+            t = row.get("apply_time")
+            if t is not None:
+                if isinstance(t, str):
+                    t = _dt.datetime.fromisoformat(t.replace("Z", "+00:00"))
+                elif hasattr(t, "to_pydatetime"):
+                    t = t.to_pydatetime()
+                elif hasattr(t, "timestamp"):
+                    t = _dt.datetime.fromtimestamp(t.timestamp())
+                timestamps.append(t)
+        if not timestamps:
+            return data
+        latest = max(timestamps)
+        cutoff = latest - _dt.timedelta(days=days)
+        return [row for row, t in zip(data, timestamps) if t >= cutoff]
+    except Exception:
+        return data
+
+
 @register("MAX_FEATURE_PSI_7D")
 def calc_max_feature_psi_7d(baseline_data: list[dict], current_data: list[dict]) -> MetricResult:
-    """所有特征中 PSI（7天窗口）的最大值。"""
-    result = calc_feature_psi(baseline_data, current_data)
+    """所有特征中 PSI（最近 7 天窗口）的最大值。"""
+    recent_data = _filter_by_days(current_data, 7)
+    result = calc_feature_psi(baseline_data, recent_data)
     max_psi = result.metric_detail.get("max_psi", 0.0) if result.metric_detail else 0.0
     return MetricResult(
         metric_code="MAX_FEATURE_PSI_7D",
         current_value=float(max_psi),
         baseline_value=0.0,
         delta=float(max_psi),
-        metric_detail=result.metric_detail,
+        metric_detail={
+            **result.metric_detail,
+            "sample_count": len(recent_data),
+            "window_days": 7,
+        },
     )
 
 
 @register("MAX_FEATURE_PSI_30D")
 def calc_max_feature_psi_30d(baseline_data: list[dict], current_data: list[dict]) -> MetricResult:
-    """所有特征中 PSI（30天窗口）的最大值（与 7d 共享计算，区分在调用层）。"""
-    result = calc_feature_psi(baseline_data, current_data)
+    """所有特征中 PSI（最近 30 天窗口）的最大值。"""
+    recent_data = _filter_by_days(current_data, 30)
+    result = calc_feature_psi(baseline_data, recent_data)
     max_psi = result.metric_detail.get("max_psi", 0.0) if result.metric_detail else 0.0
     return MetricResult(
         metric_code="MAX_FEATURE_PSI_30D",
         current_value=float(max_psi),
         baseline_value=0.0,
         delta=float(max_psi),
-        metric_detail=result.metric_detail,
+        metric_detail={
+            **result.metric_detail,
+            "sample_count": len(recent_data),
+            "window_days": 30,
+        },
     )
 
 

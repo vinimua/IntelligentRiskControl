@@ -109,8 +109,14 @@ class TestRouting:
         assert result == "NoAlertCloseNode"
 
     def test_has_alerts_goes_to_diagnosis(self):
-        result = route_after_monitoring(_base_state(has_alerts=True))
+        """B1: trigger_diagnosis=True → DiagnosisNode（替代旧 has_alerts 路由）。"""
+        result = route_after_monitoring(_base_state(trigger_diagnosis=True))
         assert result == "DiagnosisNode"
+
+    def test_has_alerts_without_trigger_stays_no_alert(self):
+        """B1: has_alerts=True 但 trigger_diagnosis=False → NoAlertCloseNode。"""
+        result = route_after_monitoring(_base_state(has_alerts=True, trigger_diagnosis=False))
+        assert result == "NoAlertCloseNode"
 
     def test_need_iteration_true_goes_to_handoff(self):
         """P0: need_iteration=True → DiagnosisHandoffNode → Agent → Decision"""

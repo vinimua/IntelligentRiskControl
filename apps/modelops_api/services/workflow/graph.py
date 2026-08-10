@@ -240,14 +240,17 @@ def _route_after_action(
 # ═══════════════════════════════════════════════════════════
 
 async def monitoring_node(state: ModelLifecycleState) -> dict:
-    """阶段 4 真实监控节点：调用 MonitoringService 执行完整指标计算 → 告警生成。"""
+    """阶段 4 真实监控节点：调用 MonitoringService.run_full_pipeline() 执行 WP02-WP08 完整管道。
+
+    产出：17 个汇总指标 + 诊断时间线 + per-feature 漂移/质量 + 检测器信号 + Sentinel 特征向量。
+    """
     from ...services.monitoring.window_loader import load_window_with_predictions
 
     model_id = _g(state, "model_id", "credit_model_001")
-    baseline_df = load_window_with_predictions("W0", model_id)
-    current_df = load_window_with_predictions("W3", model_id)
-    baseline_data = baseline_df.to_dict(orient="records")
-    current_data = current_df.to_dict(orient="records")
+    w0_df = load_window_with_predictions("W0", model_id)
+    w1_df = load_window_with_predictions("W1", model_id)
+    w2_df = load_window_with_predictions("W2", model_id)
+    w3_df = load_window_with_predictions("W3", model_id)
 
     try:
         from ...database import async_session
@@ -260,13 +263,13 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
             knowledge = KnowledgeService(driver)
             service = MonitoringService(session, knowledge)
 
-            result = await service.run(
+            result = await service.run_full_pipeline(
                 model_id=_g(state, "model_id"),
                 champion_version=_g(state, "champion_version"),
-                baseline_data=baseline_data,
-                current_data=current_data,
-                baseline_window_id=_g(state, "baseline_window_id") or "W0",
-                current_window_id=_g(state, "current_window_id") or "W3",
+                w0_df=w0_df,
+                w1_df=w1_df,
+                w2_df=w2_df,
+                w3_df=w3_df,
             )
 
             logger.info(
@@ -275,6 +278,29 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
                 alert_count=result.alert_count,
             )
 
+            # B1 持续性判定：检查是否需要触发诊断
+            trigger_diagnosis = False
+            decay_degree = "NONE"
+            requires_manual_review = False
+            if result.has_alerts:
+                try:
+                    from ...repositories.monitoring_repo import MonitoringRepo
+                    mon_repo = MonitoringRepo(session)
+                    run_record = await mon_repo.get_run(result.monitoring_run_id)
+                    judgment_json = run_record.get("persistence_judgment_json") if run_record else None
+                    if judgment_json and isinstance(judgment_json, dict):
+                        trigger_diagnosis = judgment_json.get("trigger_diagnosis", False)
+                        decay_degree = judgment_json.get("decay_degree", "NONE")
+                        requires_manual_review = judgment_json.get("requires_manual_review", False)
+                        logger.info(
+                            "monitoring_persistence_judgment",
+                            monitoring_run_id=result.monitoring_run_id,
+                            trigger_diagnosis=trigger_diagnosis,
+                            decay_degree=decay_degree,
+                        )
+                except Exception:
+                    logger.warning("persistence_judgment_load_failed", exc_info=True)
+
             return {
                 "monitoring_run_id": result.monitoring_run_id,
                 "has_alerts": result.has_alerts,
@@ -282,6 +308,9 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
                 "max_alert_severity": (
                     result.max_alert_severity.value if result.max_alert_severity else None
                 ),
+                "trigger_diagnosis": trigger_diagnosis,
+                "decay_degree": decay_degree,
+                "requires_manual_review": requires_manual_review,
                 "current_phase": (
                     LifecyclePhase.NO_ALERT.value
                     if not result.has_alerts
@@ -2692,7 +2721,14 @@ def route_after_monitoring(
 ) -> Literal["DiagnosisNode", "NoAlertCloseNode"]:
     if _g(state, "current_phase") == LifecyclePhase.FAILED.value:
         return "NoAlertCloseNode"
-    return "DiagnosisNode" if _g(state, "has_alerts") else "NoAlertCloseNode"
+    # B1 持续性判定优先：trigger_diagnosis 决定是否进诊断
+    trigger_diag = _g(state, "trigger_diagnosis", False)
+    if trigger_diag:
+        return "DiagnosisNode"
+    # SEVERE / requires_manual_review：即使 trigger_diagnosis=false 也进诊断
+    if _g(state, "requires_manual_review", False) and _g(state, "has_alerts", False):
+        return "DiagnosisNode"
+    return "NoAlertCloseNode"
 
 
 def route_after_diagnosis(

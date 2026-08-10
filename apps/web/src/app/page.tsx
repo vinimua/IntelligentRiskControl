@@ -9,6 +9,7 @@ import DeploymentPanel from "./components/deployment-panel";
 import DeploymentKgDecisionPanel from "./components/deployment-kg-decision-panel";
 import TaskFourPanel from "./components/task-four-panel";
 import KgCalibrationPanel from "./kg-calibration-panel";
+import MonitoringPanel from "./components/monitoring-panel";
 import { requestJson, Panel, StatTile, StatusDot, Badge, formatValue, Btn, Spinner, Empty } from "./components/shared";
 
 /* ── Types ── */
@@ -28,8 +29,6 @@ type LifecycleState = {
   last_error?: Record<string,unknown> | null; [key: string]: unknown;
 };
 type LifecycleRun = { lifecycle_run_id: string; current_phase?: string; state?: LifecycleState };
-type MonitoringRun = { monitoring_run_id: string; model_id?: string; champion_version?: string; overall_status?: string; alert_count?: number; max_alert_severity?: string | null; started_at?: string };
-type Metric = { metric_code?: string; current_value?: number | string | null; baseline_value?: number | string | null; delta?: number | string | null; metric_detail?: Record<string,unknown> | null };
 type TrainingPlanDetail = {
   training_plan_id?: string; model_id?: string; algorithm?: string; status?: string; risk_level?: string;
   root_cause_code?: string; champion_version?: string; frozen_champion_version?: string; rollback_target?: string;
@@ -102,8 +101,6 @@ const actionMeta: Record<string,{label:string;desc:string}> = {
   CALIBRATION_ADJUSTMENT:{label:"校准调整",desc:"重新校准概率"},THRESHOLD_ADJUSTMENT:{label:"阈值调整",desc:"重新搜索阈值"},
   MODEL_ITERATION:{label:"模型迭代",desc:"训练challenger"},MANUAL_REVIEW:{label:"人工判断",desc:"需人工定夺"},
 };
-const metricCodes = new Set(["AUC","KS","BAD_RATE","PREDICTION_MEAN","SCORE_PSI","FEATURE_PSI","SAMPLE_SIZE"]);
-
 function describePhase(v?: string|null) { const k = v||"NO_RUN"; return phaseMeta[k]??{label:k,desc:""}; }
 function describeAction(v?: string|null) { const k = v||""; return actionMeta[k]??{label:k||"暂无",desc:""}; }
 function formatRootCause(v?: string) { const m: Record<string,string>={FEATURE_DRIFT:"特征漂移",LABEL_DRIFT:"标签漂移",DATA_QUALITY:"数据质量异常",PERFORMANCE_DROP:"模型效果下降"}; return v?`${m[v]||v} (${v})`:"-"; }
@@ -122,9 +119,6 @@ export default function Page() {
   const [message, setMessage] = useState<{type:"ok"|"error";text:string}|null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [showManualCallback, setShowManualCallback] = useState(false);
-  const [monitoringRuns, setMonitoringRuns] = useState<MonitoringRun[]>([]);
-  const [selectedMonitoringRunId, setSelectedMonitoringRunId] = useState("");
-  const [metrics, setMetrics] = useState<Metric[]>([]);
   const [modelId, setModelId] = useState("credit_model_001");
   const [championVersion, setChampionVersion] = useState("champion_v1");
   const [triggerType, setTriggerType] = useState("SCHEDULED_TRIGGER");
@@ -154,8 +148,6 @@ export default function Page() {
   const completedSteps = lifecycleSteps.filter(([key])=>Boolean(state[key])).length;
   const progress = Math.round((completedSteps/lifecycleSteps.length)*100);
   const deploymentIndex = Math.max(deploymentStages.findIndex(s=>s===state.deployment_stage), state.deployment_id?0:-1);
-  const coreMetrics = useMemo(()=>metrics.filter(m=>metricCodes.has(String(m.metric_code))),[metrics]);
-  const driftRows = useMemo(()=>metrics.filter(m=>m.metric_detail?.category==="drift").map(m=>({name:String(m.metric_detail?.feature_name??m.metric_code??"-"),value:Number(m.current_value??0)})).sort((a,b)=>b.value-a.value).slice(0,10),[metrics]);
 
   // ── Effects (unchanged) ──
   useEffect(()=>{if(!autoRefresh||!currentRunId||isTerminal)return;const t=setInterval(()=>{loadLifecycleRun(currentRunId,false);},3000);return()=>clearInterval(t);},[autoRefresh,currentRunId,isTerminal]);
@@ -166,8 +158,6 @@ export default function Page() {
   // ── Handlers (unchanged) ──
   async function runAction<T>(key:string,action:()=>Promise<T>,ok:string,show=true){setBusy(key);if(show)setMessage(null);try{const r=await action();if(show)setMessage({type:"ok",text:ok});return r;}catch(e){setMessage({type:"error",text:e instanceof Error?e.message:"请求失败"});return null;}finally{setBusy(null);}}
   async function testApi(){await runAction("health",()=>requestJson(apiBase,"/health/live"),"后端连接正常。");}
-  async function loadMonitoringRuns(){const d=await runAction("monitoring",()=>requestJson<Items<MonitoringRun>>(apiBase,"/api/monitoring/runs?limit=20"),"监控运行已加载。");if(!d)return;setMonitoringRuns(d.items);const f=d.items[0]?.monitoring_run_id;if(f){setSelectedMonitoringRunId(f);await loadMetrics(f);}}
-  async function loadMetrics(mid=selectedMonitoringRunId){if(!mid){setMessage({type:"error",text:"请先选监控运行"});return;}const d=await runAction("metrics",()=>requestJson<Items<Metric>>(apiBase,`/api/monitoring/runs/${mid}/metrics`),"指标已加载。");if(d)setMetrics(d.items);}
   async function loadLifecycleRun(id=currentRunId,show=true){if(!id){setMessage({type:"error",text:"请先输入 lifecycle_run_id"});return null;}const d=await runAction("load-run",()=>requestJson<LifecycleRun>(apiBase,`/api/lifecycle-runs/${id}`),"生命周期已刷新。",show);if(d){setLifecycleRun(d);setRunId(d.lifecycle_run_id);}return d;}
   async function startLifecycle(e?:FormEvent<HTMLFormElement>){e?.preventDefault();const d=await runAction("start",()=>requestJson<LifecycleRun>(apiBase,"/api/lifecycle-runs",{method:"POST",body:JSON.stringify({model_id:modelId,champion_version:championVersion,trigger_type:triggerType})}),"生命周期已启动。");if(d){setLifecycleRun(d);setRunId(d.lifecycle_run_id);setTrainingPlan(null);setActiveNav("workflow");}}
   async function resumeLifecycle(payload:Record<string,unknown>,key:string){if(!currentRunId){setMessage({type:"error",text:"请先启动或加载生命周期"});return null;}const d=await runAction(key,()=>requestJson<LifecycleRun>(apiBase,`/api/lifecycle-runs/${currentRunId}/resume`,{method:"POST",body:JSON.stringify(payload)}),"生命周期已恢复。");if(d){setLifecycleRun(d);setRunId(d.lifecycle_run_id);}return d;}
@@ -323,44 +313,7 @@ export default function Page() {
         </div>
       )}
 
-      {activeNav==="monitoring" && (
-        <div className="space-y-5 p-5">
-          <div><p className="text-[11px] font-semibold uppercase tracking-[.16em] text-indigo-600">监控看板</p><h1 className="text-2xl font-bold tracking-tight text-slate-900 mt-1">模型监控与漂移检测</h1></div>
-          <div className="grid gap-5 lg:grid-cols-[340px_1fr]">
-            <Panel title="监控运行" action={<Btn onClick={loadMonitoringRuns} disabled={busy==="monitoring"}>{busy==="monitoring"?<Spinner/>:"加载监控"}</Btn>}>
-              <div className="max-h-[600px] space-y-1 overflow-auto">
-                {monitoringRuns.length===0?<Empty text="尚未加载监控运行" />:monitoringRuns.map(r=>(
-                  <div key={r.monitoring_run_id} className={`flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer transition hover:bg-slate-50 ${selectedMonitoringRunId===r.monitoring_run_id?"bg-indigo-50 border border-indigo-100":""}`} onClick={()=>{setSelectedMonitoringRunId(r.monitoring_run_id);loadMetrics(r.monitoring_run_id);}}>
-                    <StatusDot status={r.overall_status} />
-                    <div className="flex-1 min-w-0"><div className="text-sm font-semibold text-slate-800 truncate">{formatValue(r.model_id)}</div><div className="text-xs text-slate-400 font-mono">{formatValue(r.champion_version)}</div></div>
-                    <Badge label={`${r.alert_count??0} 告警`} color={(r.alert_count??0)>0?"red":"green"} />
-                  </div>
-                ))}
-              </div>
-            </Panel>
-            <div className="space-y-4">
-              <Panel title="核心指标">
-                <div className="grid gap-3 grid-cols-2 xl:grid-cols-4">
-                  {coreMetrics.length===0?<Empty text="请选择监控运行" />:coreMetrics.slice(0,8).map((m,i)=>(
-                    <StatTile key={`${m.metric_code}-${i}`} label={formatValue(m.metric_code)} value={formatValue(m.current_value)} sub={`基线 ${formatValue(m.baseline_value)} / 变化 ${formatValue(m.delta)}`} />
-                  ))}
-                </div>
-              </Panel>
-              <Panel title="特征漂移 Top 10">
-                {driftRows.length===0?<Empty text="未找到漂移指标" />:driftRows.map((r,i)=>(
-                  <div key={`${r.name}-${i}`} className="flex items-center gap-3 py-1.5">
-                    <span className="text-xs font-semibold text-slate-400 w-5">{i+1}</span>
-                    <div className="flex-1">
-                      <div className="flex justify-between text-sm"><span className="text-slate-700 font-medium truncate">{r.name}</span><span className="font-mono font-semibold text-slate-600">{r.value.toFixed(4)}</span></div>
-                      <div className="mt-1 h-1.5 rounded-full bg-slate-100 overflow-hidden"><div className="h-full rounded-full bg-sky-500 transition-all" style={{width:`${Math.min(100,(r.value/Math.max(0.001,driftRows[0]?.value||1))*100)}%`}} /></div>
-                    </div>
-                  </div>
-                ))}
-              </Panel>
-            </div>
-          </div>
-        </div>
-      )}
+      {activeNav==="monitoring" && <MonitoringPanel apiBase={apiBase} />}
 
       {activeNav==="state" && (
         <div className="space-y-5 p-5">

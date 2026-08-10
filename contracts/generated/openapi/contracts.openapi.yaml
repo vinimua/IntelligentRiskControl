@@ -652,12 +652,12 @@ paths:
       tags:
       - monitoring
       summary: Trigger Run
-      description: '触发一次完整监控管道 — 每个 W1/W2/W3 窗口独立运行 _monitor_one。
+      description: '触发一次完整监控管道 — 调用 MonitoringService.run_full_pipeline()。
 
 
-        W0 做基线，W1/W2/W3 各自作为独立监控窗口。
+        管道：W0 基线 → W1+W2+W3 滚动窗口 → per-feature 漂移/质量 → 检测器 → Sentinel。
 
-        指标按窗口分别持久化，Dashboard 按窗口分组展示。'
+        产出：monitoring_metrics + monitoring_feature_drift + 诊断时间线证据。'
       operationId: trigger_run_api_monitoring_runs_post
       requestBody:
         required: true
@@ -746,6 +746,114 @@ paths:
       summary: Get Alerts
       description: 查看一次监控运行的全部告警。
       operationId: get_alerts_api_monitoring_runs__monitoring_run_id__alerts_get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/{monitoring_run_id}/enriched-metrics:
+    get:
+      tags:
+      - monitoring
+      summary: Get Enriched Metrics
+      description: "获取富化后的全部指标 + 覆盖摘要（监控判定台核心端点）。\n\n与 /metrics 的区别：\n- 每个指标附带 category、display_name、direction、warning_threshold、\n\
+        \  critical_threshold、threshold_usage_ratio、status_reason\n- 额外返回 CoverageSummary（规则覆盖、类别统计、最接近阈值）"
+      operationId: get_enriched_metrics_api_monitoring_runs__monitoring_run_id__enriched_metrics_get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/{monitoring_run_id}/feature-drift:
+    get:
+      tags:
+      - monitoring
+      summary: Get Feature Drift
+      description: '获取特征漂移表格数据。
+
+
+        支持按 PSI、模型重要性、状态排序。
+
+        7D/30D 从 monitoring_feature_drift 表读取不同时间窗口的数据。'
+      operationId: get_feature_drift_api_monitoring_runs__monitoring_run_id__feature_drift_get
+      parameters:
+      - name: monitoring_run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Monitoring Run Id
+      - name: sort_by
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: '排序字段: psi|importance|status'
+          title: Sort By
+        description: '排序字段: psi|importance|status'
+      - name: sort_order
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: '排序方向: asc|desc'
+          default: desc
+          title: Sort Order
+        description: '排序方向: asc|desc'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/monitoring/runs/{monitoring_run_id}/data-quality:
+    get:
+      tags:
+      - monitoring
+      summary: Get Data Quality
+      description: '获取数据质量下钻数据（字段级）。
+
+
+        包含：整体缺失率/异常值率/DQ分、逐字段明细、Schema 变更。'
+      operationId: get_data_quality_api_monitoring_runs__monitoring_run_id__data_quality_get
       parameters:
       - name: monitoring_run_id
         in: path
