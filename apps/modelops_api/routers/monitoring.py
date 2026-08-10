@@ -151,8 +151,19 @@ async def get_enriched_metrics(
         raise NotFoundError(f"监控运行 {monitoring_run_id} 不存在")
     all_metrics = await repo.get_metrics(monitoring_run_id)
 
-    enriched = [enrich_metric(m) for m in all_metrics]
-    summary = build_coverage_summary(enriched, run)
+    enriched_all = [enrich_metric(m) for m in all_metrics]
+    summary = build_coverage_summary(enriched_all, run)
+
+    # 指标卡片区只展示 17 个核心指标（去重取第一个）
+    from ..services.monitoring.metric_enricher import METRIC_CATEGORY_MAP
+    canonical_codes = set(METRIC_CATEGORY_MAP.keys())
+    seen_codes: set[str] = set()
+    enriched_canonical: list[dict] = []
+    for m in enriched_all:
+        code = m["metric_code"]
+        if code in canonical_codes and code not in seen_codes:
+            seen_codes.add(code)
+            enriched_canonical.append(m)
 
     # B1 持续性判定 — 从 monitoring_runs 读取
     raw_persistence = run.get("persistence_judgment_json")
@@ -165,7 +176,7 @@ async def get_enriched_metrics(
     diagnosis_status = run.get("diagnosis_status")
 
     return _envelope(request, {
-        "metrics": enriched,
+        "metrics": enriched_canonical,
         "summary": summary,
         "persistence": persistence,
         "diagnosis_status": diagnosis_status,

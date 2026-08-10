@@ -56,6 +56,18 @@ def _is_severe_level(sev: str | None) -> bool:
     return str(sev).upper() in ("CRITICAL", "HIGH")
 
 
+def _safe_float_for_judgment(val) -> float | None:
+    """安全转 float，处理 None / NaN / inf / Decimal。"""
+    if val is None:
+        return None
+    try:
+        import math
+        f = float(val)
+        return f if math.isfinite(f) else None
+    except (ValueError, TypeError):
+        return None
+
+
 def _is_warning_level(sev: str | None) -> bool:
     return str(sev).upper() == "WARNING"
 
@@ -117,6 +129,9 @@ class PersistenceJudgmentService:
         if is_severe:
             decay_degree = "SEVERE"
             trigger_diag = True
+            # SEVERE 升级时同步更新窗口状态，避免前端显示"严重衰减"但 7D/30D 仍为"正常"
+            status_7d = "TRIGGERED"
+            status_30d = "TRIGGERED"
 
         # ⑦ 汇总证据
         evidence = self._build_evidence(counts_7d, counts_30d, window_alerts)
@@ -137,22 +152,59 @@ class PersistenceJudgmentService:
     # ── 数据加载 ──
 
     async def _load_window_alerts(self, monitoring_run_id: str) -> list[dict]:
-        """加载该 monitoring_run 关联的所有滚动窗口告警。"""
+        """加载所有 V2_EVENT_TIME 窗口指标，逐条套用阈值规则，返回窗口级告警。
+
+        B1 持续性判定的证据层不应依赖 monitoring_alerts（告警产品层），
+        而应直接从窗口指标重新评估阈值，避免被告警展示策略（去重/合并/suppress）影响。
+        """
         rows = await self.session.execute(
             text("""
-                SELECT ma.alert_code, ma.metric_code, ma.severity,
-                       mm.metric_detail->>'window_id' AS window_id,
-                       (mm.metric_detail->>'window_days')::int AS window_days,
-                       mm.current_value, mm.delta
-                FROM monitoring.monitoring_alerts ma
-                JOIN monitoring.monitoring_metrics mm ON ma.metric_id = mm.metric_id
-                WHERE mm.monitoring_run_id = :run_id
-                  AND mm.metric_detail->>'window_id' IS NOT NULL
-                ORDER BY mm.metric_detail->>'window_start' ASC
+                SELECT metric_code, current_value, baseline_value, delta,
+                       availability_status,
+                       metric_detail->>'window_id' AS window_id,
+                       (metric_detail->>'window_days')::int AS window_days,
+                       metric_detail->>'window_start' AS window_start
+                FROM monitoring.monitoring_metrics
+                WHERE monitoring_run_id = :run_id
+                  AND metric_version = 'V2_EVENT_TIME'
+                  AND metric_detail->>'window_id' IS NOT NULL
+                ORDER BY metric_detail->>'window_start' ASC
             """),
             {"run_id": monitoring_run_id},
         )
-        return [dict(r._mapping) for r in rows]
+        metrics = [dict(r._mapping) for r in rows]
+
+        # 复用 DEFAULT_THRESHOLD_RULES，保证与汇总告警同一套阈值
+        from .threshold_rules import DEFAULT_THRESHOLD_RULES as RULES
+
+        alerts: list[dict] = []
+        for m in metrics:
+            code = m.get("metric_code")
+            if not code:
+                continue
+            rule = RULES.get(code)
+            if rule is None:
+                continue
+            if m.get("availability_status") != "AVAILABLE":
+                continue
+
+            delta_val = m.get("delta")
+            cur_val = m.get("current_value")
+            triggered, severity = rule.evaluate(
+                _safe_float_for_judgment(delta_val),
+                _safe_float_for_judgment(cur_val),
+            )
+            if triggered and severity:
+                alerts.append({
+                    "metric_code": code,
+                    "severity": severity.value if hasattr(severity, "value") else str(severity),
+                    "window_id": m.get("window_id"),
+                    "window_days": m.get("window_days"),
+                    "current_value": cur_val,
+                    "delta": delta_val,
+                })
+
+        return alerts
 
     async def _load_window_metrics(self, monitoring_run_id: str) -> list[dict]:
         """加载所有窗口指标（含未触发告警的）。"""

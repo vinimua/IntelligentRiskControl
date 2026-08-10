@@ -45,7 +45,11 @@ from .threshold_rules import DEFAULT_THRESHOLD_RULES
 from . import metric_calculators  # noqa: F401
 
 # V2 算法模块（第一类 P0-P1）
-from .baseline import MonitoringBaseline, build_monitoring_baseline
+from .baseline import (
+    MonitoringBaseline,
+    build_monitoring_baseline,
+    compute_monitoring_performance_metrics,
+)
 from .drift.algorithms import (
     benjamini_hochberg,
     categorical_drift,
@@ -86,7 +90,11 @@ def _process_single_window(
         and sample_count >= 50 and bad_count is not None and bad_count >= 1
     )
     if label_ready:
-        perf = compute_performance_metrics(window["is_bad"], window["y_pred_proba"])
+        perf = compute_monitoring_performance_metrics(
+            window["is_bad"],
+            window["y_pred_proba"],
+            window["risk_score"] if "risk_score" in window.columns else None,
+        )
     else:
         perf = {k: None for k in ("auc", "ks", "pr_auc", "brier", "ece", "bad_recall")}
 
@@ -455,7 +463,11 @@ class MonitoringService:
                 and sample_count >= 50 and bad_count is not None and bad_count >= 1
             )
             if label_ready:
-                perf = compute_performance_metrics(window["is_bad"], window["y_pred_proba"])
+                perf = compute_monitoring_performance_metrics(
+                    window["is_bad"],
+                    window["y_pred_proba"],
+                    window["risk_score"] if "risk_score" in window.columns else None,
+                )
             else:
                 perf = {k: None for k in ("auc", "ks", "pr_auc", "brier", "ece", "bad_recall")}
 
@@ -558,15 +570,8 @@ class MonitoringService:
                 availability_status=availability.value,
                 metric_detail=detail,
             )
-            await self._emit_alert(
-                monitoring_run_id,
-                result["metric_id"],
-                mr,
-                self.rules.get(metric_code),
-                triggered_alerts,
-                object_type=object_type,
-                object_code=object_code or model_id,
-            )
+            # 不在这里触发告警 — per-window V2_EVENT_TIME 是诊断证据，不是告警源
+            # 告警统一由外层 _persist_summary_metric + _emit_alert 处理
             return result["metric_id"]
 
         # Diagnosis V2 contract: persist the complete model-specific timeline.
@@ -1009,8 +1014,10 @@ class MonitoringService:
                 and bad_count >= min_bad
             )
             if label_ready:
-                perf = compute_performance_metrics(
-                    window_data["y_true"], window_data["y_pred_proba"]
+                perf = compute_monitoring_performance_metrics(
+                    window_data["y_true"],
+                    window_data["y_pred_proba"],
+                    window_data["risk_score"] if "risk_score" in window_data.columns else None,
                 )
             else:
                 perf = {
@@ -1240,7 +1247,11 @@ class MonitoringService:
         # ④ 性能指标
         perf: dict[str, float | None] = {}
         if label_ready and "y_true" in df_current and "y_pred_proba" in df_current:
-            perf = compute_performance_metrics(df_current["y_true"], df_current["y_pred_proba"])
+            perf = compute_monitoring_performance_metrics(
+                df_current["y_true"],
+                df_current["y_pred_proba"],
+                df_current["risk_score"] if "risk_score" in df_current.columns else None,
+            )
         else:
             perf = {k: None for k in ("auc", "ks", "pr_auc", "brier", "ece", "bad_recall")}
 
@@ -1533,7 +1544,7 @@ class MonitoringService:
 
     # ── 私有方法 ──
 
-    async def _persist_metric(self, run_id: str, mr: MetricResult) -> str:
+    async def _persist_metric(self, run_id: str, mr: MetricResult, *, triggered: bool | None = None) -> str:
         result = await self.repo.insert_metric(
             monitoring_run_id=run_id,
             metric_code=mr.metric_code,
@@ -1542,7 +1553,7 @@ class MonitoringService:
             baseline_value=mr.baseline_value,
             current_value=mr.current_value,
             delta=mr.delta,
-            triggered=(mr.availability_status == AvailabilityStatus.AVAILABLE),
+            triggered=triggered if triggered is not None else (mr.availability_status == AvailabilityStatus.AVAILABLE),
             availability_status=mr.availability_status.value,
             metric_detail=mr.metric_detail,
         )

@@ -311,10 +311,12 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
                 "trigger_diagnosis": trigger_diagnosis,
                 "decay_degree": decay_degree,
                 "requires_manual_review": requires_manual_review,
+                "_debug_has_alerts": result.has_alerts,
+                "_debug_alert_count": result.alert_count,
                 "current_phase": (
-                    LifecyclePhase.NO_ALERT.value
-                    if not result.has_alerts
-                    else LifecyclePhase.MONITORING_COMPLETED.value
+                    LifecyclePhase.MONITORING_COMPLETED.value
+                    if result.has_alerts
+                    else LifecyclePhase.NO_ALERT.value
                 ),
             }
 

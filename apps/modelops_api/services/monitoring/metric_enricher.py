@@ -235,20 +235,32 @@ def enrich_metric(db_row: dict) -> dict:
 def build_coverage_summary(enriched_metrics: list[dict], run: dict | None = None) -> dict:
     """从富化指标列表生成 CoverageSummary。
 
-    同时合并标签成熟度信息（如果 run 中有 alert_context_json）。
+    只统计 17 个核心指标（METRIC_CATEGORY_MAP 中的 key），
+    诊断时间线和 per-feature 指标不参与规则覆盖计数。
     """
-    total = len(enriched_metrics)
-    calculated = sum(1 for m in enriched_metrics if m["availability_status"] == "AVAILABLE")
-    available = sum(1 for m in enriched_metrics if m["availability_status"] != "CALCULATION_FAILED"
+    # 只保留核心指标，并按 metric_code 去重（取第一个，通常是最新窗口的）
+    canonical_codes = set(METRIC_CATEGORY_MAP.keys())
+    seen: set[str] = set()
+    canonical_metrics: list[dict] = []
+    for m in enriched_metrics:
+        code = m["metric_code"]
+        if code in canonical_codes and code not in seen:
+            seen.add(code)
+            canonical_metrics.append(m)
+
+    total = len(canonical_codes)
+    calculated = sum(1 for m in canonical_metrics if m["availability_status"] == "AVAILABLE")
+    available = sum(1 for m in canonical_metrics if m["availability_status"] != "CALCULATION_FAILED"
                     and m["availability_status"] != "DATA_NOT_AVAILABLE")
-    rules_enabled = sum(1 for m in enriched_metrics if m["rule_enabled"])
-    triggered = sum(1 for m in enriched_metrics if m["triggered"])
+    rules_enabled = sum(1 for m in canonical_metrics if m["rule_enabled"])
+    triggered = sum(1 for m in canonical_metrics if m["triggered"])
 
     # 按类别统计
     category_breakdown: dict[str, dict] = {}
     for cat in ["performance", "drift", "quality", "stability"]:
-        cat_metrics = [m for m in enriched_metrics if m["category"] == cat]
-        cat_total = len(cat_metrics)
+        cat_codes = [c for c, cat_ in METRIC_CATEGORY_MAP.items() if cat_ == cat]
+        cat_metrics = [m for m in canonical_metrics if m["category"] == cat]
+        cat_total = len(cat_codes)
         cat_normal = sum(1 for m in cat_metrics if not m["triggered"] and m["rule_enabled"]
                          and m["availability_status"] == "AVAILABLE")
         cat_warning = sum(1 for m in cat_metrics if m["triggered"] and m["severity"] == "WARNING")
@@ -265,8 +277,8 @@ def build_coverage_summary(enriched_metrics: list[dict], run: dict | None = None
             "unavailable": cat_unavailable,
         }
 
-    # 最接近阈值的前 3 个指标
-    with_ratio = [m for m in enriched_metrics if m["threshold_usage_ratio"] is not None
+    # 最接近阈值的前 3 个指标（只看核心指标中未触发的）
+    with_ratio = [m for m in canonical_metrics if m["threshold_usage_ratio"] is not None
                   and m["rule_enabled"] and not m["triggered"]]
     with_ratio.sort(key=lambda m: m["threshold_usage_ratio"] or 0, reverse=True)
     closest_thresholds = [
@@ -289,13 +301,13 @@ def build_coverage_summary(enriched_metrics: list[dict], run: dict | None = None
             except (json.JSONDecodeError, TypeError):
                 alert_context = {}
         label_maturity = {
-            "mature": True,  # 默认成熟，实际应从 availability_issues 传入
+            "mature": True,
         }
 
-    # 未接入规则的指标列表
+    # 未接入规则的指标列表（只看核心指标）
     unmonitored_metrics = [
         {"metric_code": m["metric_code"], "display_name": m["display_name"]}
-        for m in enriched_metrics
+        for m in canonical_metrics
         if not m["rule_enabled"] and m["availability_status"] == "AVAILABLE"
     ]
 

@@ -58,6 +58,14 @@ def _get_column(data: list[dict], col: str) -> list:
     return [row.get(col) for row in data]
 
 
+def _get_ranking_scores(data: list[dict]) -> list:
+    """Ranking metrics prefer raw model score; fallback to calibrated proba."""
+    raw = _get_column(data, "risk_score")
+    if any(v is not None for v in raw):
+        return raw
+    return _get_column(data, "y_pred_proba")
+
+
 # ── AUC ──
 
 
@@ -67,7 +75,7 @@ def calc_auc(baseline_data: list[dict], current_data: list[dict]) -> MetricResul
     from sklearn.metrics import roc_auc_score
 
     y_true = _get_column(current_data, "y_true")
-    y_pred = _get_column(current_data, "y_pred_proba")
+    y_pred = _get_ranking_scores(current_data)
 
     valid = [(t, p) for t, p in zip(y_true, y_pred) if t is not None and p is not None]
     if len(valid) < 10:
@@ -88,7 +96,7 @@ def calc_auc(baseline_data: list[dict], current_data: list[dict]) -> MetricResul
         )
 
     b_true = _get_column(baseline_data, "y_true")
-    b_pred = _get_column(baseline_data, "y_pred_proba")
+    b_pred = _get_ranking_scores(baseline_data)
     b_valid = [(t, p) for t, p in zip(b_true, b_pred) if t is not None and p is not None]
 
     baseline_auc: float | None = None
@@ -134,7 +142,7 @@ def _compute_ks(scores: np.ndarray, labels: np.ndarray) -> float | None:
 def calc_ks(baseline_data: list[dict], current_data: list[dict]) -> MetricResult:
     """计算 KS 统计量及与 baseline 的变化。"""
     y_true = _get_column(current_data, "y_true")
-    scores = _get_column(current_data, "y_pred_proba")
+    scores = _get_ranking_scores(current_data)
 
     valid = [(s, t) for s, t in zip(scores, y_true) if s is not None and t is not None]
     if len(valid) < 10:
@@ -154,7 +162,7 @@ def calc_ks(baseline_data: list[dict], current_data: list[dict]) -> MetricResult
         )
 
     b_true = _get_column(baseline_data, "y_true")
-    b_scores = _get_column(baseline_data, "y_pred_proba")
+    b_scores = _get_ranking_scores(baseline_data)
     b_valid = [(s, t) for s, t in zip(b_scores, b_true) if s is not None and t is not None]
     baseline_ks: float | None = None
     if len(b_valid) >= 10:
@@ -582,7 +590,7 @@ def calc_pr_auc(baseline_data: list[dict], current_data: list[dict]) -> MetricRe
     from sklearn.metrics import average_precision_score
 
     y_true = _get_column(current_data, "y_true")
-    y_pred = _get_column(current_data, "y_pred_proba")
+    y_pred = _get_ranking_scores(current_data)
     valid = [(t, p) for t, p in zip(y_true, y_pred) if t is not None and p is not None]
     if len(valid) < 10:
         return MetricResult(metric_code="PR_AUC", availability_status=AvailabilityStatus.SAMPLE_TOO_SMALL)
@@ -593,7 +601,7 @@ def calc_pr_auc(baseline_data: list[dict], current_data: list[dict]) -> MetricRe
         return MetricResult(metric_code="PR_AUC", availability_status=AvailabilityStatus.CALCULATION_FAILED)
 
     b_true = _get_column(baseline_data, "y_true")
-    b_pred = _get_column(baseline_data, "y_pred_proba")
+    b_pred = _get_ranking_scores(baseline_data)
     b_valid = [(t, p) for t, p in zip(b_true, b_pred) if t is not None and p is not None]
     base = float(average_precision_score(*zip(*b_valid))) if len(b_valid) >= 10 else None
     delta = (cur - base) if base is not None else None
@@ -668,7 +676,7 @@ def calc_bad_recall(baseline_data: list[dict], current_data: list[dict]) -> Metr
     import pandas as pd
 
     y_true = _get_column(current_data, "y_true")
-    y_pred = _get_column(current_data, "y_pred_proba")
+    y_pred = _get_ranking_scores(current_data)
     valid = pd.DataFrame({"y": y_true, "score": y_pred}).dropna()
     if len(valid) < 10 or valid["y"].sum() == 0:
         return MetricResult(metric_code="BAD_RECALL", availability_status=AvailabilityStatus.SAMPLE_TOO_SMALL)
@@ -677,7 +685,7 @@ def calc_bad_recall(baseline_data: list[dict], current_data: list[dict]) -> Metr
     cur = float(top["y"].sum() / max(1, valid["y"].sum()))
 
     b_true = _get_column(baseline_data, "y_true")
-    b_pred = _get_column(baseline_data, "y_pred_proba")
+    b_pred = _get_ranking_scores(baseline_data)
     b_valid = pd.DataFrame({"y": b_true, "score": b_pred}).dropna()
     if len(b_valid) >= 10 and b_valid["y"].sum() > 0:
         cutoff_b = max(1, int(np.ceil(len(b_valid) * 0.20)))
