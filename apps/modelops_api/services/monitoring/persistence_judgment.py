@@ -501,17 +501,32 @@ class PersistenceJudgmentService:
         evidence = []
         all_metrics = set(list(counts_7d.keys()) + list(counts_30d.keys()))
         for mc in sorted(all_metrics):
+            cnt_7d = counts_7d.get(mc, {})
+            cnt_30d = counts_30d.get(mc, {})
+            severity_counts = {
+                "WARNING": int(cnt_7d.get("WARNING", 0) or 0) + int(cnt_30d.get("WARNING", 0) or 0),
+                "HIGH": int(cnt_7d.get("HIGH", 0) or 0) + int(cnt_30d.get("HIGH", 0) or 0),
+                "CRITICAL": int(cnt_7d.get("CRITICAL", 0) or 0) + int(cnt_30d.get("CRITICAL", 0) or 0),
+            }
+            max_severity = (
+                "CRITICAL" if severity_counts["CRITICAL"] > 0
+                else "HIGH" if severity_counts["HIGH"] > 0
+                else "WARNING" if severity_counts["WARNING"] > 0
+                else None
+            )
             entry = {
                 "metric_code": mc,
                 "is_core": _is_core(mc),
-                "count_7d": counts_7d.get(mc, {}),
-                "count_30d": counts_30d.get(mc, {}),
+                "count_7d": cnt_7d,
+                "count_30d": cnt_30d,
                 "window_count_7d": len(set(a["window_id"] for a in alerts
                                             if a.get("metric_code") == mc
                                             and a.get("window_days") == 7)),
                 "window_count_30d": len(set(a["window_id"] for a in alerts
                                              if a.get("metric_code") == mc
                                              and a.get("window_days") == 30)),
+                "consecutive_count": cnt_7d.get("max_consecutive", 0),
+                "max_severity": max_severity,
             }
             evidence.append(entry)
         return evidence
@@ -527,7 +542,15 @@ class PersistenceJudgmentService:
         summary: dict[str, dict] = {}
         for dim, metrics in dim_map.items():
             dim_alerts = [a for a in alerts if a.get("metric_code") in metrics]
+            warning = sum(1 for a in dim_alerts if str(a.get("severity")).upper() == "WARNING")
+            critical = sum(
+                1 for a in dim_alerts
+                if str(a.get("severity")).upper() in {"HIGH", "CRITICAL"}
+            )
             summary[dim] = {
+                "total": len(dim_alerts),
+                "warning": warning,
+                "critical": critical,
                 "alert_count": len(dim_alerts),
                 "max_severity": max(
                     (_severity_rank(a.get("severity")) for a in dim_alerts), default=0

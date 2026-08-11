@@ -9,6 +9,7 @@ export type MonitoringRun = {
   overall_status?: string;
   alert_count?: number;
   max_alert_severity?: string | null;
+  diagnosis_status?: string | null;
   started_at?: string;
 };
 
@@ -110,12 +111,15 @@ export type AlertItem = {
   alert_id?: string;
   alert_code?: string;
   severity?: string;
+  source?: string;
   metric_code?: string;
+  metric_version?: string;
   baseline_value?: number | null;
   current_value?: number | null;
   delta?: number | null;
   threshold?: number | null;
   rule_type?: string;
+  alert_detail?: Record<string, unknown> | null;
   metric_detail?: Record<string, unknown> | null;
   created_at?: string;
 };
@@ -143,8 +147,17 @@ export type PersistenceJudgment = {
     window_count_30d: number;
     max_severity: string | null;
     consecutive_count: number;
+    count_7d?: Record<string, number>;
+    count_30d?: Record<string, number>;
   }>;
-  dimension_alert_summary: Record<string, { total: number; warning: number; critical: number }>;
+  dimension_alert_summary: Record<string, {
+    total?: number;
+    warning?: number;
+    critical?: number;
+    alert_count?: number;
+    max_severity?: number;
+    triggered_metrics?: string[];
+  }>;
   recovery_status: string;
 };
 

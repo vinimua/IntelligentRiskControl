@@ -20,6 +20,9 @@ type LifecycleState = {
   agent_decision_id?: string | null; decision_proposal_id?: string | null; manual_review_id?: string | null;
   training_plan_id?: string | null; training_job_id?: string | null; experiment_id?: string | null;
   qualification_run_id?: string | null; deployment_id?: string | null;
+  has_alerts?: boolean | null; alert_count?: number | null; max_alert_severity?: string | null;
+  trigger_diagnosis?: boolean | null; decay_degree?: string | null; status_7d?: string | null; status_30d?: string | null;
+  diagnosis_status?: string | null; persistence_judgment?: Record<string, unknown> | null;
   recommended_action?: string | null; need_iteration?: boolean | null; requires_manual_review?: boolean;
   agent_confidence?: number | null; primary_root_cause_code?: string | null; primary_root_cause_score?: number | null;
   challenger_version?: string | null; challenger_qualified?: boolean | null; business_round?: number | null;
@@ -95,6 +98,7 @@ const phaseMeta: Record<string,{label:string;desc:string}> = {
   ROLLED_BACK:{label:"已回滚",desc:"部署失败已回滚"},EVENT_CLOSED:{label:"事件已关闭",desc:"闭环完成"},
   FAILED:{label:"流程失败",desc:"无法自动处理"},
 };
+phaseMeta.NO_ALERT = { label: "未触发诊断", desc: "B1 判定无需进入诊断，流程结束" };
 const actionMeta: Record<string,{label:string;desc:string}> = {
   NO_ACTION:{label:"无需处理",desc:"不用修复"},CONTINUE_OBSERVATION:{label:"继续观察",desc:"继续监控"},
   DATA_REPAIR:{label:"数据修复",desc:"数据异常需修复"},PIPELINE_REPAIR:{label:"管道修复",desc:"ETL异常"},
@@ -159,7 +163,7 @@ export default function Page() {
   async function runAction<T>(key:string,action:()=>Promise<T>,ok:string,show=true){setBusy(key);if(show)setMessage(null);try{const r=await action();if(show)setMessage({type:"ok",text:ok});return r;}catch(e){setMessage({type:"error",text:e instanceof Error?e.message:"请求失败"});return null;}finally{setBusy(null);}}
   async function testApi(){await runAction("health",()=>requestJson(apiBase,"/health/live"),"后端连接正常。");}
   async function loadLifecycleRun(id=currentRunId,show=true){if(!id){setMessage({type:"error",text:"请先输入 lifecycle_run_id"});return null;}const d=await runAction("load-run",()=>requestJson<LifecycleRun>(apiBase,`/api/lifecycle-runs/${id}`),"生命周期已刷新。",show);if(d){setLifecycleRun(d);setRunId(d.lifecycle_run_id);}return d;}
-  async function startLifecycle(e?:FormEvent<HTMLFormElement>){e?.preventDefault();const d=await runAction("start",()=>requestJson<LifecycleRun>(apiBase,"/api/lifecycle-runs",{method:"POST",body:JSON.stringify({model_id:modelId,champion_version:championVersion,trigger_type:triggerType})}),"生命周期已启动。");if(d){setLifecycleRun(d);setRunId(d.lifecycle_run_id);setTrainingPlan(null);setActiveNav("workflow");}}
+  async function startLifecycle(e?:FormEvent<HTMLFormElement>){e?.preventDefault();const d=await runAction("start",()=>requestJson<LifecycleRun>(apiBase,"/api/lifecycle-runs?wait=false",{method:"POST",body:JSON.stringify({model_id:modelId,champion_version:championVersion,trigger_type:triggerType})}),"生命周期已启动，后台监控正在运行。");if(d){setLifecycleRun(d);setRunId(d.lifecycle_run_id);setTrainingPlan(null);setActiveNav("workflow");}}
   async function resumeLifecycle(payload:Record<string,unknown>,key:string){if(!currentRunId){setMessage({type:"error",text:"请先启动或加载生命周期"});return null;}const d=await runAction(key,()=>requestJson<LifecycleRun>(apiBase,`/api/lifecycle-runs/${currentRunId}/resume`,{method:"POST",body:JSON.stringify(payload)}),"生命周期已恢复。");if(d){setLifecycleRun(d);setRunId(d.lifecycle_run_id);}return d;}
   async function submitManualReview(decision:"APPROVE"|"REJECT"){if(!currentRunId||!decisionProposalId){setMessage({type:"error",text:"当前无复核建议"});return;}const ok=decision==="APPROVE";const reason=reviewReason.trim()||(ok?"人工确认通过。":"人工确认拒绝。");const report=await runAction(ok?"approve":"reject",()=>requestJson<{review_id:string}>(apiBase,`/api/iteration/decisions/${decisionProposalId}/reviews`,{method:"POST",body:JSON.stringify({proposal_id:decisionProposalId,reviewer_id:reviewerId.trim()||"admin",decision,reason,rejection_reason_codes:ok?[]:["MANUAL_REJECTED"],adjustment_instructions:ok?[]:["请重新生成修复建议"],forbidden_adjustments:[],expected_evidence:[],reviewed_at:new Date().toISOString()})}),ok?"复核已通过":"复核已拒绝");if(!report)return;await resumeLifecycle({decision:ok?"approved":"rejected",manual_review_id:report.review_id,review_id:report.review_id},ok?"approve":"reject");}
   async function submitTrainingCallback(){if(!currentRunId||!trainingJobId){setMessage({type:"error",text:"缺少训练任务ID"});return;}const st=callbackStatus.trim()||"SUCCEEDED";const cv=candidateVersion.trim()||String(state.challenger_version||`${state.champion_version||"champion"}_challenger_v1`);const cb=await runAction("callback",()=>requestJson<{callback_applied:boolean}>(apiBase,`/api/internal/iteration/jobs/${trainingJobId}/callback`,{method:"POST",body:JSON.stringify({training_job_id:trainingJobId,lifecycle_run_id:currentRunId,idempotency_key:`${String(state.iteration_run_id||"iter")}:round-${businessRound}:exp-${currentExperimentId}`,experiment_id:currentExperimentId,status:st,candidate_version:cv,model_artifact_uri:st==="SUCCEEDED"?`s3://riskitem/demo/models/${cv}`:undefined,training_metrics:{auc:0.81,ks:0.43},validation_metrics:{original_drop:0.04,recovered_amount:0.035,recovery_rate:0.875,champion_auc:0.74,challenger_auc:0.775,healthy_lower_bound:0.76,score_psi:0.08,train_valid_gap:0.015,discrimination_passed:true,calibration_passed:true,oot_passed:true},segment_metrics:{segment_governance_passed:true},artifact_checksums:{},environment_manifest:{runtime:"frontend-manual"},technical_retry_count:0})}),"手动回调已提交");if(cb)await loadLifecycleRun(currentRunId,false);}
@@ -221,7 +225,7 @@ export default function Page() {
                   <Input label="模型 ID" value={modelId} onChange={setModelId} />
                   <Input label="Champion 版本" value={championVersion} onChange={setChampionVersion} />
                   <Select label="触发类型" value={triggerType} onChange={setTriggerType} options={["SCHEDULED_TRIGGER","THRESHOLD_TRIGGER","ABNORMAL_TRIGGER","MANUAL_TRIGGER"]} />
-                  <Btn primary disabled={busy==="start"} onClick={()=>startLifecycle()}>{currentRunId?"启动新的生命周期":"启动生命周期"}</Btn>
+                  <Btn primary disabled={busy==="start"}>{currentRunId?"启动新的生命周期":"启动生命周期"}</Btn>
                 </form>
                 <div className="mt-4 rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-sm text-indigo-800">推荐动作：{primaryAction}</div>
               </Panel>
@@ -262,6 +266,36 @@ export default function Page() {
                 <StatTile label="Agent 置信度" value={formatValue(state.agent_confidence)} sub="决策把握程度" />
               </div>
               <div className="dash-card px-4 py-3 font-mono text-xs text-slate-500 break-all">lifecycle_run_id: {formatValue(currentRunId)}</div>
+
+              {/* 诊断摘要 — 解释流程为何关闭或停滞 */}
+              {(state.diagnosis_run_id || state.trigger_diagnosis) && (
+                <Panel title="诊断摘要">
+                  <div className="space-y-2 text-sm">
+                    <StatusLine label="根因" value={formatRootCause(state.primary_root_cause_code??undefined)} />
+                    <StatusLine label="建议动作" value={formatValue(state.recommended_action)} />
+                    <StatusLine label="触发诊断" value={state.trigger_diagnosis ? "是" : "否"} />
+                    <StatusLine label="衰减程度" value={formatValue(state.decay_degree)} />
+                    <StatusLine label="7D 状态" value={formatValue(state.status_7d)} />
+                    <StatusLine label="30D 状态" value={formatValue(state.status_30d)} />
+                    {state.primary_root_cause_code === "uncertain" && (
+                      <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                        诊断无法确定根因（知识图谱中缺少对应指标的根因映射）。
+                        流程已关闭，不会自动进入迭代或训练。
+                      </div>
+                    )}
+                    {state.current_phase === "EVENT_CLOSED" && !state.decision_proposal_id && (
+                      <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                        事件已闭环：未生成修复决策，不会触发模型迭代或部署。
+                      </div>
+                    )}
+                    {state.recommended_action === "MANUAL_REVIEW" && !state.decision_proposal_id && state.current_phase !== "EVENT_CLOSED" && (
+                      <div className="mt-2 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-700">
+                        需要人工复核，请点击下方 刷新状态 按钮推进流程。
+                      </div>
+                    )}
+                  </div>
+                </Panel>
+              )}
 
               <Panel title="流程进度">
                 <div className="phase-timeline">

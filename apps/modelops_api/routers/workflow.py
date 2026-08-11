@@ -9,17 +9,20 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+import structlog
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..core.exceptions import NotFoundError, request_trace_id
 from ..database import async_session, get_db
+from ..repositories.workflow_repo import WorkflowRepo
 from ..services.workflow.workflow_service import WorkflowService
 from ..services.workflow.checkpointer_manager import get_checkpointer
 
 router = APIRouter(prefix="/api/lifecycle-runs", tags=["workflow"])
+logger = structlog.get_logger(__name__)
 
 
 class StartRunRequest(BaseModel):
@@ -62,14 +65,73 @@ def _envelope(request: Request, data, message: str = "success") -> dict:
     }
 
 
+async def _advance_lifecycle_background(
+    lifecycle_run_id: str,
+    model_id: str,
+    champion_version: str,
+    trigger_type: str,
+) -> None:
+    async with async_session() as session:
+        service = WorkflowService(session, get_checkpointer())
+        try:
+            await service.run_existing(
+                lifecycle_run_id=lifecycle_run_id,
+                model_id=model_id,
+                champion_version=champion_version,
+                trigger_type=trigger_type,
+            )
+        except Exception as exc:
+            await session.rollback()
+            logger.error(
+                "workflow_background_advance_failed",
+                lifecycle_run_id=lifecycle_run_id,
+                exc_info=True,
+            )
+            repo = WorkflowRepo(session)
+            await repo.update_phase(
+                lifecycle_run_id,
+                "FAILED",
+                {
+                    "lifecycle_run_id": lifecycle_run_id,
+                    "model_id": model_id,
+                    "champion_version": champion_version,
+                    "trigger_type": trigger_type,
+                    "current_phase": "FAILED",
+                    "last_error": {
+                        "reason": "workflow_background_advance_failed",
+                        "message": str(exc),
+                    },
+                },
+            )
+            await repo.complete_run(lifecycle_run_id)
+            await session.commit()
+
+
 @router.post("")
 async def start_run(
     request: Request,
     body: StartRunRequest,
+    background_tasks: BackgroundTasks,
+    wait: bool = Query(True, description="true=同步跑完；false=立即返回并后台推进"),
     db: AsyncSession = Depends(get_db),
 ):
     checkpointer = get_checkpointer()
     service = WorkflowService(db, checkpointer)
+    if not wait:
+        result = await service.create_run_only(
+            model_id=body.model_id,
+            champion_version=body.champion_version,
+            trigger_type=body.trigger_type,
+        )
+        background_tasks.add_task(
+            _advance_lifecycle_background,
+            result["lifecycle_run_id"],
+            body.model_id,
+            body.champion_version,
+            body.trigger_type,
+        )
+        return _envelope(request, result, message="lifecycle queued")
+
     result = await service.start(
         model_id=body.model_id,
         champion_version=body.champion_version,

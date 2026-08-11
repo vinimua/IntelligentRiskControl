@@ -393,6 +393,20 @@
         ],
         "summary": "Start Run",
         "operationId": "start_run_api_lifecycle_runs_post",
+        "parameters": [
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "true=同步跑完；false=立即返回并后台推进",
+              "default": true,
+              "title": "Wait"
+            },
+            "description": "true=同步跑完；false=立即返回并后台推进"
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {

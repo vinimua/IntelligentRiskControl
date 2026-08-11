@@ -29,6 +29,12 @@ class ModelLifecycleState(ContractModel):
     has_alerts: bool | None = None
     alert_count: int | None = None
     max_alert_severity: str | None = None
+    trigger_diagnosis: bool | None = None
+    decay_degree: str | None = None
+    status_7d: str | None = None
+    status_30d: str | None = None
+    diagnosis_status: str | None = None
+    persistence_judgment: dict | None = None
 
     # 任务二摘要
     diagnosis_run_id: str | None = None

@@ -123,10 +123,20 @@ class TestRouting:
         result = route_after_diagnosis(_base_state(need_iteration=True))
         assert result == "DiagnosisHandoffNode"
 
-    def test_need_iteration_false_goes_to_no_alert_close(self):
-        """P1: need_iteration=False → NoAlertCloseNode"""
+    def test_need_iteration_false_goes_to_observation_close(self):
+        """P1: need_iteration=False → ObservationCloseNode"""
         result = route_after_diagnosis(_base_state(need_iteration=False))
-        assert result == "NoAlertCloseNode"
+        assert result == "ObservationCloseNode"
+
+    def test_manual_review_action_wins_over_need_iteration_false(self):
+        result = route_after_diagnosis(
+            _base_state(
+                recommended_action="MANUAL_REVIEW",
+                requires_manual_review=True,
+                need_iteration=False,
+            )
+        )
+        assert result == "ManualReviewNode"
 
     def test_need_iteration_none_goes_to_manual_review(self):
         result = route_after_diagnosis(_base_state(need_iteration=None))

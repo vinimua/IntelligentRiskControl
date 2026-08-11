@@ -72,6 +72,15 @@ from .trend_features import trailing_slope
 logger = structlog.get_logger(__name__)
 
 
+def _summarize_alerts(alerts: list[AlertDetail]) -> tuple[bool, Severity | None]:
+    """Return (has_alerts, max_severity) for the current in-memory alert list."""
+    if not alerts:
+        return False, None
+    sev_order = {"CRITICAL": 4, "HIGH": 3, "WARNING": 2, "INFO": 1}
+    max_sev = max(alerts, key=lambda a: sev_order.get(a.severity.value, 0)).severity
+    return True, max_sev
+
+
 # ── 7D/30D 单窗口处理辅助函数 ──
 
 def _process_single_window(
@@ -264,6 +273,13 @@ class MonitoringService:
                     alert_type = await self.knowledge.resolve_alert(metric_code, severity)
 
                     alert_code = alert_type.alert_code if alert_type else f"ANOMALY_{metric_code}"
+                    metric_detail = dict(mr.metric_detail or {})
+                    if (
+                        "source" in metric_detail
+                        and metric_detail["source"] not in {"SUMMARY_THRESHOLD", "PERSISTENCE_JUDGMENT"}
+                    ):
+                        metric_detail.setdefault("calculation_source", metric_detail["source"])
+                    metric_detail["source"] = "SUMMARY_THRESHOLD"
                     alert_detail = AlertDetail(
                         alert_id=str(uuid.uuid4()),
                         alert_code=alert_code,
@@ -280,20 +296,14 @@ class MonitoringService:
                         threshold_rule_id=rule.rule_id,
                         threshold_rule_version=rule.rule_version,
                         availability_status=mr.availability_status,
-                        metric_detail=mr.metric_detail,
+                        metric_detail=metric_detail,
                         created_at=datetime.now(timezone.utc),
                     )
                     triggered_alerts.append(alert_detail)
 
                     # 持久化告警（关联 metric_id）
                     await self._persist_alert(monitoring_run_id, metric_id, mr, alert_detail)
-
-        # ⑦ 生成 AlertContext
-        has_alerts = len(triggered_alerts) > 0
-        max_sev = None
-        if triggered_alerts:
-            sev_order = {"CRITICAL": 4, "HIGH": 3, "WARNING": 2, "INFO": 1}
-            max_sev = max(triggered_alerts, key=lambda a: sev_order.get(a.severity.value, 0)).severity
+                    await self.repo.update_metric_triggered(metric_id, True)
 
         # 安全解析 DataTrack，非法输入回退到 NATURAL
         try:
@@ -302,6 +312,23 @@ class MonitoringService:
             logger.warning("invalid_data_track", data_track=data_track)
             track = DataTrack.NATURAL
 
+        # ⑦ B1 持续性判定
+        from .persistence_judgment import PersistenceJudgmentService
+        judgment_svc = PersistenceJudgmentService(self.session)
+        judgment = await judgment_svc.judge(monitoring_run_id)
+        diagnosis_status = "PENDING" if judgment.trigger_diagnosis else "SKIPPED"
+        await self.repo.update_persistence_judgment(
+            monitoring_run_id, judgment.__dict__, diagnosis_status,
+        )
+        await self._emit_persistence_alerts(
+            monitoring_run_id=monitoring_run_id,
+            judgment=judgment,
+            model_id=model_id,
+            triggered_alerts=triggered_alerts,
+        )
+
+        # ⑧ 生成 AlertContext（必须在 B1 派生告警落库之后）
+        has_alerts, max_sev = _summarize_alerts(triggered_alerts)
         alert_context = AlertContext(
             schema_version="V1",
             trace_id=trace_id or "",
@@ -314,16 +341,7 @@ class MonitoringService:
             alert_details=triggered_alerts,
         )
 
-        # ⑦ B1 持续性判定
-        from .persistence_judgment import PersistenceJudgmentService
-        judgment_svc = PersistenceJudgmentService(self.session)
-        judgment = await judgment_svc.judge(monitoring_run_id)
-        diagnosis_status = "PENDING" if judgment.trigger_diagnosis else "SKIPPED"
-        await self.repo.update_persistence_judgment(
-            monitoring_run_id, judgment.__dict__, diagnosis_status,
-        )
-
-        # ⑧ 完成 run
+        # ⑨ 完成 run
         await self.repo.complete_run(
             monitoring_run_id=monitoring_run_id,
             overall_status="COMPLETED",
@@ -361,6 +379,12 @@ class MonitoringService:
             return
         alert_type = await self.knowledge.resolve_alert(mr.metric_code, sev)
         metric_detail = dict(mr.metric_detail or {})
+        if (
+            "source" in metric_detail
+            and metric_detail["source"] not in {"SUMMARY_THRESHOLD", "PERSISTENCE_JUDGMENT"}
+        ):
+            metric_detail.setdefault("calculation_source", metric_detail["source"])
+        metric_detail["source"] = "SUMMARY_THRESHOLD"
         value = mr.delta if mr.delta is not None else mr.current_value
         blocking_threshold = getattr(rule, "blocking_threshold", None)
         if blocking_threshold is not None and value is not None:
@@ -391,6 +415,104 @@ class MonitoringService:
         triggered_alerts.append(detail)
         await self._persist_alert(monitoring_run_id, metric_id, mr, detail)
         await self.repo.update_metric_triggered(metric_id, True)
+
+    async def _emit_persistence_alerts(
+        self,
+        monitoring_run_id: str,
+        judgment,  # PersistenceJudgment
+        model_id: str,
+        triggered_alerts: list[AlertDetail],
+    ) -> None:
+        """将 B1 持续性判定结果作为 PERSISTENCE_JUDGMENT 类型告警写入 monitoring_alerts。
+
+        只在 B1 触发诊断或要求人工复核时写入，不是每窗口一条，而是一条最终决策告警。
+        """
+        if not (judgment.trigger_diagnosis or judgment.requires_manual_review):
+            return
+
+        # decay_degree → severity
+        sev_map = {
+            "SEVERE": Severity.CRITICAL,
+            "SUSTAINED_30D": Severity.HIGH,
+            "SHORT_TERM_7D": Severity.WARNING,
+        }
+        severity = sev_map.get(judgment.decay_degree, Severity.WARNING)
+
+        # alert_code
+        code_map = {
+            "SEVERE": "PERSISTENT_DECAY_SEVERE",
+            "SUSTAINED_30D": "PERSISTENT_DECAY_SUSTAINED_30D",
+            "SHORT_TERM_7D": "PERSISTENT_DECAY_SHORT_TERM_7D",
+        }
+        alert_code = code_map.get(judgment.decay_degree, "PERSISTENT_DECAY")
+
+        detail = AlertDetail(
+            alert_id=str(uuid.uuid4()),
+            alert_code=alert_code,
+            severity=severity,
+            object_type=ObjectType.MODEL,
+            object_code=model_id,
+            metric_code="PERSISTENCE_JUDGMENT",
+            metric_version="B1",
+            baseline_value=None,
+            current_value=None,
+            delta=None,
+            threshold=None,
+            rule_type=RuleType.SHIFT_THRESHOLD,
+            threshold_rule_id="B1_PERSISTENCE_V1",
+            threshold_rule_version="V1",
+            availability_status=AvailabilityStatus.AVAILABLE,
+            metric_detail={
+                "source": "PERSISTENCE_JUDGMENT",
+                "trigger_diagnosis": judgment.trigger_diagnosis,
+                "decay_degree": judgment.decay_degree,
+                "requires_manual_review": judgment.requires_manual_review,
+                "status_7d": judgment.status_7d,
+                "status_30d": judgment.status_30d,
+                "persistence_evidence": judgment.persistence_evidence,
+                "dimension_alert_summary": judgment.dimension_alert_summary,
+                "recovery_status": judgment.recovery_status,
+            },
+            created_at=datetime.now(timezone.utc),
+        )
+        triggered_alerts.append(detail)
+
+        # 先写一条占位 monitoring_metrics 行（满足外键约束）
+        metric_result = await self.repo.insert_metric(
+            monitoring_run_id=monitoring_run_id,
+            metric_code="PERSISTENCE_JUDGMENT",
+            metric_version="B1",
+            object_type="MODEL",
+            object_code=model_id,
+            triggered=True,
+            availability_status="AVAILABLE",
+            metric_detail={
+                "source": "PERSISTENCE_JUDGMENT",
+                "decay_degree": judgment.decay_degree,
+                "status_7d": judgment.status_7d,
+                "status_30d": judgment.status_30d,
+            },
+        )
+
+        await self.repo.insert_alert(
+            monitoring_run_id=monitoring_run_id,
+            metric_id=metric_result["metric_id"],
+            alert_code=detail.alert_code,
+            severity=detail.severity.value,
+            object_type=detail.object_type.value,
+            object_code=detail.object_code,
+            metric_code=detail.metric_code,
+            metric_version="B1",
+            baseline_value=None,
+            current_value=None,
+            delta=None,
+            threshold=None,
+            rule_type=detail.rule_type,
+            threshold_rule_id=detail.threshold_rule_id,
+            threshold_rule_version=detail.threshold_rule_version,
+            availability_status=detail.availability_status.value,
+            alert_detail=detail.model_dump(),
+        )
 
     # ── 完整 WP02-WP08 管道（与交接包 pipeline.py 一致） ──
 
@@ -853,24 +975,6 @@ class MonitoringService:
                 await self._emit_alert(monitoring_run_id, mid, mr, rule, triggered_alerts,
                                        object_code=model_id)
 
-        # ── 告警组装 ──
-        has_alerts = len(triggered_alerts) > 0
-        max_sev = None
-        if triggered_alerts:
-            sev_order = {"CRITICAL": 4, "HIGH": 3, "WARNING": 2, "INFO": 1}
-            max_sev = max(triggered_alerts, key=lambda a: sev_order.get(a.severity.value, 0)).severity
-
-        alert_context = AlertContext(
-            schema_version="V2-WP08",
-            trace_id=trace_id, monitoring_run_id=monitoring_run_id,
-            model_id=model_id, model_version=champion_version,
-            monitor_window_id="W3", baseline_id=baseline.baseline_id,
-            data_track=DataTrack.NATURAL,
-            anomaly_probability=None,  # 需要已训练的 Sentinel 模型
-            top_signals=[],
-            alert_details=triggered_alerts,
-        )
-
         # ── B1 持续性判定 ──
         from .persistence_judgment import PersistenceJudgmentService
         judgment_svc = PersistenceJudgmentService(self.session)
@@ -883,6 +987,27 @@ class MonitoringService:
                      monitoring_run_id=monitoring_run_id,
                      trigger_diagnosis=judgment.trigger_diagnosis,
                      decay_degree=judgment.decay_degree)
+
+        # B1 持续性判定 → 决策型告警写入 monitoring_alerts
+        await self._emit_persistence_alerts(
+            monitoring_run_id=monitoring_run_id,
+            judgment=judgment,
+            model_id=model_id,
+            triggered_alerts=triggered_alerts,
+        )
+
+        # ── 告警组装（必须在 B1 派生告警落库之后） ──
+        has_alerts, max_sev = _summarize_alerts(triggered_alerts)
+        alert_context = AlertContext(
+            schema_version="V2-WP08",
+            trace_id=trace_id, monitoring_run_id=monitoring_run_id,
+            model_id=model_id, model_version=champion_version,
+            monitor_window_id="W3", baseline_id=baseline.baseline_id,
+            data_track=DataTrack.NATURAL,
+            anomaly_probability=None,  # 需要已训练的 Sentinel 模型
+            top_signals=[],
+            alert_details=triggered_alerts,
+        )
 
         await self.repo.complete_run(
             monitoring_run_id=monitoring_run_id, overall_status="COMPLETED",
@@ -1365,7 +1490,11 @@ class MonitoringService:
                             threshold_rule_id=rule.rule_id,
                             threshold_rule_version=rule.rule_version,
                             availability_status=AvailabilityStatus.AVAILABLE,
-                            metric_detail={"max_psi": max_psi, "mean_psi": mean_psi},
+                            metric_detail={
+                                "source": "SUMMARY_THRESHOLD",
+                                "max_psi": max_psi,
+                                "mean_psi": mean_psi,
+                            },
                             created_at=datetime.now(timezone.utc),
                         )
                         triggered_alerts.append(detail)
@@ -1417,17 +1546,28 @@ class MonitoringService:
                 all_metrics.append(mr)
                 await self._persist_metric(monitoring_run_id, mr)
 
-        # ⑨ 生成 AlertContext + 完成 run
-        has_alerts = len(triggered_alerts) > 0
-        max_sev = None
-        if triggered_alerts:
-            sev_order = {"CRITICAL": 4, "HIGH": 3, "WARNING": 2, "INFO": 1}
-            max_sev = max(triggered_alerts, key=lambda a: sev_order.get(a.severity.value, 0)).severity
-
         try:
             track = DataTrack(data_track)
         except ValueError:
             track = DataTrack.NATURAL
+
+        # ⑨ B1 持续性判定；若触发，则写入决策型 monitoring_alerts
+        from .persistence_judgment import PersistenceJudgmentService
+        judgment_svc = PersistenceJudgmentService(self.session)
+        judgment = await judgment_svc.judge(monitoring_run_id)
+        diagnosis_status = "PENDING" if judgment.trigger_diagnosis else "SKIPPED"
+        await self.repo.update_persistence_judgment(
+            monitoring_run_id, judgment.__dict__, diagnosis_status,
+        )
+        await self._emit_persistence_alerts(
+            monitoring_run_id=monitoring_run_id,
+            judgment=judgment,
+            model_id=model_id,
+            triggered_alerts=triggered_alerts,
+        )
+
+        # ⑩ 生成 AlertContext + 完成 run（必须在 B1 派生告警之后）
+        has_alerts, max_sev = _summarize_alerts(triggered_alerts)
 
         alert_context = AlertContext(
             schema_version="V2",

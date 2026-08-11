@@ -226,7 +226,11 @@ export default function MonitoringPanel({ apiBase }: Props) {
               <StatusBar summary={summary} alerts={alerts} runInfo={selectedRun} />
 
               {/* B1 持续性判定 */}
-              <PersistenceCard persistence={persistence} diagnosisStatus={diagnosisStatus} />
+              <PersistenceCard
+                persistence={persistence}
+                diagnosisStatus={diagnosisStatus}
+                visibleAlertCount={alerts.length}
+              />
 
               {/* 类别概览卡片 */}
               <CategoryCards

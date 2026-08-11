@@ -168,6 +168,17 @@ class MonitoringRepo:
             },
         )
 
+    async def update_diagnosis_status(self, monitoring_run_id: str, diagnosis_status: str) -> None:
+        """Update diagnosis lifecycle status for a monitoring run."""
+        await self.session.execute(
+            text("""
+                UPDATE monitoring.monitoring_runs
+                SET diagnosis_status = :status
+                WHERE monitoring_run_id = :id
+            """),
+            {"id": monitoring_run_id, "status": diagnosis_status},
+        )
+
     async def get_metrics(self, monitoring_run_id: str) -> list[dict]:
         result = await self.session.execute(
             text("""
@@ -233,7 +244,25 @@ class MonitoringRepo:
             """),
             {"id": monitoring_run_id},
         )
-        return [dict(row) for row in result.mappings()]
+        alerts: list[dict] = []
+        for row in result.mappings():
+            item = dict(row)
+            detail = item.get("alert_detail") or {}
+            if isinstance(detail, str):
+                try:
+                    detail = json.loads(detail)
+                except json.JSONDecodeError:
+                    detail = {}
+            if isinstance(detail, dict):
+                item["alert_detail"] = detail
+                metric_detail = detail.get("metric_detail") or {}
+                source = detail.get("source")
+                if not source and isinstance(metric_detail, dict):
+                    source = metric_detail.get("source")
+                if source:
+                    item["source"] = source
+            alerts.append(item)
+        return alerts
 
     async def get_unassigned_alerts(self, monitoring_run_id: str) -> list[dict]:
         result = await self.session.execute(

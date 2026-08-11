@@ -75,6 +75,56 @@ _DEFAULT_METRIC_ALERT_MAP: dict[str, dict] = {
         "severity": Severity.INFO,
         "description": "监控样本量不足以可靠评估",
     },
+    "PR_AUC": {
+        "alert_code": "PR_AUC_DROP",
+        "severity": Severity.WARNING,
+        "description": "PR-AUC 低于基准",
+    },
+    "BAD_RECALL": {
+        "alert_code": "BAD_RECALL_DROP",
+        "severity": Severity.WARNING,
+        "description": "坏样本召回率低于基准",
+    },
+    "BRIER": {
+        "alert_code": "CALIBRATION_DEGRADE",
+        "severity": Severity.WARNING,
+        "description": "Brier 校准误差增大",
+    },
+    "ECE": {
+        "alert_code": "CALIBRATION_DEGRADE",
+        "severity": Severity.WARNING,
+        "description": "期望校准误差增大",
+    },
+    "BAD_RATE": {
+        "alert_code": "BAD_RATE_SHIFT",
+        "severity": Severity.WARNING,
+        "description": "坏样本率偏离基准",
+    },
+    "OUTLIER_RATE": {
+        "alert_code": "OUTLIER_RATE_SPIKE",
+        "severity": Severity.WARNING,
+        "description": "异常值率异常上升",
+    },
+    "DATA_QUALITY_SCORE": {
+        "alert_code": "DATA_QUALITY_DEGRADE",
+        "severity": Severity.WARNING,
+        "description": "数据质量综合分下降",
+    },
+    "PREDICTION_MEAN": {
+        "alert_code": "PREDICTION_MEAN_SHIFT",
+        "severity": Severity.WARNING,
+        "description": "预测均值发生偏移",
+    },
+    "MAX_FEATURE_PSI_7D": {
+        "alert_code": "HIGH_FEATURE_PSI",
+        "severity": Severity.WARNING,
+        "description": "近7天最大特征 PSI 超阈值",
+    },
+    "MAX_FEATURE_PSI_30D": {
+        "alert_code": "HIGH_FEATURE_PSI",
+        "severity": Severity.WARNING,
+        "description": "近30天最大特征 PSI 超阈值",
+    },
 }
 
 

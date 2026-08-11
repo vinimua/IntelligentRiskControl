@@ -15,6 +15,7 @@ from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...repositories.workflow_repo import WorkflowRepo
+from packages.models.common.enums import LifecyclePhase
 from packages.models.workflow.lifecycle_state import ModelLifecycleState
 from .graph import build_graph
 
@@ -26,6 +27,36 @@ class WorkflowService:
         self.session = session
         self.checkpointer = checkpointer
         self.graph = build_graph()
+
+    async def create_run_only(
+        self,
+        model_id: str,
+        champion_version: str,
+        trigger_type: str = "SCHEDULED_TRIGGER",
+    ) -> dict:
+        repo = WorkflowRepo(self.session)
+        run = await repo.create_run(model_id, champion_version, trigger_type)
+        lifecycle_run_id = run["lifecycle_run_id"]
+        initial_state = ModelLifecycleState(
+            lifecycle_run_id=lifecycle_run_id,
+            model_id=model_id,
+            champion_version=champion_version,
+            trigger_type=trigger_type,
+            current_phase=LifecyclePhase.MONITORING.value,
+        )
+        state_dict = initial_state.model_dump()
+        state_dict["current_phase"] = LifecyclePhase.MONITORING.value
+        await repo.update_phase(
+            lifecycle_run_id,
+            LifecyclePhase.MONITORING.value,
+            state_dict,
+        )
+        await self.session.commit()
+        return {
+            "lifecycle_run_id": lifecycle_run_id,
+            "current_phase": LifecyclePhase.MONITORING.value,
+            "state": state_dict,
+        }
 
     async def start(
         self,
@@ -107,6 +138,81 @@ class WorkflowService:
 
         logger.info("workflow_started", lifecycle_run_id=lifecycle_run_id)
 
+        return {
+            "lifecycle_run_id": lifecycle_run_id,
+            "current_phase": final_state.get("current_phase") if final_state else "CREATED",
+            "state": final_state,
+        }
+
+    async def run_existing(
+        self,
+        lifecycle_run_id: str,
+        model_id: str,
+        champion_version: str,
+        trigger_type: str = "SCHEDULED_TRIGGER",
+    ) -> dict:
+        """鎺ㄨ繘涓€涓凡鍒涘缓鐨?lifecycle_run锛岀敤浜庡悗鍙板紓姝ュ惎鍔ㄣ€?"""
+        repo = WorkflowRepo(self.session)
+        initial_state = ModelLifecycleState(
+            lifecycle_run_id=lifecycle_run_id,
+            model_id=model_id,
+            champion_version=champion_version,
+            trigger_type=trigger_type,
+            current_phase=LifecyclePhase.MONITORING.value,
+        )
+        config = {"configurable": {"thread_id": lifecycle_run_id}}
+        compiled = self.graph.compile(checkpointer=self.checkpointer)
+
+        final_state = None
+        try:
+            async for event in compiled.astream(
+                initial_state.model_dump(), config, stream_mode="values"
+            ):
+                final_state = event
+            if final_state and "__interrupt__" in final_state:
+                checkpoint = await compiled.aget_state(config)
+                if checkpoint and checkpoint.values:
+                    final_state = checkpoint.values
+                if final_state and "__interrupt__" not in final_state:
+                    final_state["__interrupt__"] = [
+                        {"value": "lifecycle_interrupted", "reason": "workflow paused"}
+                    ]
+        except GraphInterrupt:
+            checkpoint = await compiled.aget_state(config)
+            if checkpoint and checkpoint.values:
+                final_state = checkpoint.values
+            else:
+                final_state = initial_state.model_dump()
+            if final_state and "__interrupt__" not in final_state:
+                final_state["__interrupt__"] = [
+                    {"value": "manual_review_required", "reason": "awaiting human approval"}
+                ]
+            logger.info("workflow_interrupted", lifecycle_run_id=lifecycle_run_id)
+
+        if final_state:
+            try:
+                await repo.update_phase(
+                    lifecycle_run_id,
+                    final_state.get("current_phase", "CREATED"),
+                    final_state,
+                )
+                if final_state.get("current_phase") in (
+                    "NO_ALERT", "COMPLETED", "PROMOTED", "ROLLED_BACK",
+                    "FAILED", "EVENT_CLOSED",
+                ):
+                    await repo.complete_run(lifecycle_run_id)
+                if final_state.get("requires_manual_review"):
+                    await repo.set_manual_review(lifecycle_run_id)
+                await self.session.commit()
+            except Exception:
+                await self.session.rollback()
+                logger.warning(
+                    "workflow_db_sync_failed",
+                    lifecycle_run_id=lifecycle_run_id,
+                    exc_info=True,
+                )
+
+        logger.info("workflow_background_advanced", lifecycle_run_id=lifecycle_run_id)
         return {
             "lifecycle_run_id": lifecycle_run_id,
             "current_phase": final_state.get("current_phase") if final_state else "CREATED",

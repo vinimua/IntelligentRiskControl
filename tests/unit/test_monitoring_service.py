@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -193,3 +194,45 @@ class TestMonitoringServiceResultFields:
         assert "AUC" in metric_codes
         assert "KS" in metric_codes
         assert "SAMPLE_SIZE" in metric_codes
+
+
+class TestMonitoringServicePersistenceAlerts:
+    """B1 持续性判定触发时，run 摘要和 AlertContext 必须包含 B1 派生告警。"""
+
+    async def test_b1_persistence_alert_updates_run_summary(self, mock_session, mock_knowledge):
+        svc = MonitoringService(mock_session, mock_knowledge)
+        data = _make_healthy_data(200)
+        judgment = SimpleNamespace(
+            trigger_diagnosis=True,
+            decay_degree="SEVERE",
+            requires_manual_review=True,
+            status_7d="TRIGGERED",
+            status_30d="TRIGGERED",
+            persistence_evidence=[
+                {
+                    "metric_code": "OUTLIER_RATE",
+                    "count_7d": {"CRITICAL": 3},
+                    "count_30d": {"CRITICAL": 9},
+                    "window_count_7d": 3,
+                    "window_count_30d": 9,
+                }
+            ],
+            dimension_alert_summary={"DATA": {"total": 12, "critical": 12, "warning": 0}},
+            recovery_status="NONE",
+        )
+
+        with patch(
+            "apps.modelops_api.services.monitoring.persistence_judgment.PersistenceJudgmentService.judge",
+            new=AsyncMock(return_value=judgment),
+        ):
+            result = await svc.run(
+                model_id="m1",
+                champion_version="v1",
+                baseline_data=data,
+                current_data=data,
+            )
+
+        assert result.has_alerts is True
+        assert result.max_alert_severity == Severity.CRITICAL
+        assert any(a.metric_code == "PERSISTENCE_JUDGMENT" for a in result.alerts)
+        assert result.alert_count == len(result.alerts)

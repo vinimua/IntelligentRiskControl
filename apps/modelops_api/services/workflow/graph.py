@@ -1,43 +1,24 @@
 """LangGraph 主图 + 节点。
 
-LangGraph 开发路线 V1.0 §2-15。
-
-完整的图结构：
+当前监控后的路由口径：
     START → MonitoringNode
-        ├─ has_alerts=False / FAILED → NoAlertCloseNode → END
-        └─ has_alerts=True  → DiagnosisNode
-            ├─ need_iteration=False → NoAlertCloseNode → END
-            ├─ need_iteration=None  → ManualReviewNode → END
-            └─ need_iteration=True  → DiagnosisHandoffNode
-                → AgentDecisionNode
-                → IterationDecisionNode
+        ├─ FAILED → NoAlertCloseNode → END
+        ├─ B1 trigger_diagnosis=True → DiagnosisNode
+        ├─ B1 requires_manual_review=True → DiagnosisNode
+        └─ 否则 → NoAlertCloseNode → END
 
-    IterationDecisionNode → route_after_iteration_decision
-        ├─ FAILED / requires_manual_review → ManualReviewNode
-        ├─ CONTINUE_OBSERVATION / NO_ACTION  → ObservationCloseNode → END
-        ├─ DATA_REPAIR / PIPELINE_REPAIR     → RepairPlanNode → EventPendingRepairNode → END
-        ├─ CALIBRATION_ADJUSTMENT            → CalibrationPlanNode → QualificationNode
-        ├─ THRESHOLD_ADJUSTMENT              → ThresholdPlanNode → QualificationNode
-        ├─ MODEL_ITERATION (full/light)      → FeatureReconstructionNode
-        │     ├─ dispatched  → WaitFeatureReconstructionNode → TrainingPlanNode
-        │     ├─ FAILED      → FailureAnalysisNode
-        │     └─ no-op       → TrainingPlanNode
-        └─ MODEL_ITERATION (minimal/tune_only) → TrainingPlanNode
+注意：
+    monitoring_alerts 是展示/汇总告警；
+    B1 persistence_judgment_json 是是否进入诊断的决策源。
+    因此“有展示告警”不等于“一定进入诊断”，
+    “B1 触发但 monitoring_alerts 为空”也必须允许进入诊断。
 
-    TrainingPlanNode → route_after_training_plan
-        ├─ use_hyperparameter_tuning → HyperparameterTuningNode
-        │     ├─ dispatched  → WaitTuningCallbackNode → TrainingJobDispatchNode
-        │     └─ FAILED      → FailureAnalysisNode
-        └─ otherwise → TrainingJobDispatchNode
-
-    TrainingJobDispatchNode → WaitTrainingCallbackNode
-        → TrainingCallbackResumeNode → QualificationNode
-
-    QualificationNode → route_after_qualification
-        ├─ qualified=True  → DeploymentGateNode → EventCloseNode → END
-        └─ qualified=False → FailureAnalysisNode
-              ├─ round < max_rounds → NextRoundPlanNode → TrainingPlanNode
-              └─ round >= max_rounds → StopAutoIterationNode → END
+诊断后的路由口径：
+    DiagnosisNode
+        ├─ requires_manual_review / MANUAL_REVIEW → ManualReviewNode
+        ├─ need_iteration=True → DiagnosisHandoffNode → AgentDecisionNode → IterationDecisionNode
+        ├─ need_iteration=False → ObservationCloseNode → END
+        └─ 无法自动判断 → ManualReviewNode
 """
 
 from __future__ import annotations
@@ -175,6 +156,29 @@ def _recommended_action(state: ModelLifecycleState) -> str | None:
     return action.value if hasattr(action, "value") else action
 
 
+async def _update_monitoring_diagnosis_status(
+    monitoring_run_id: str | None, diagnosis_status: str,
+) -> None:
+    if not monitoring_run_id:
+        return
+    try:
+        from ...database import async_session
+        from ...repositories.monitoring_repo import MonitoringRepo
+
+        async with async_session() as session:
+            await MonitoringRepo(session).update_diagnosis_status(
+                monitoring_run_id, diagnosis_status,
+            )
+            await session.commit()
+    except Exception:
+        logger.warning(
+            "monitoring_diagnosis_status_update_failed",
+            monitoring_run_id=monitoring_run_id,
+            diagnosis_status=diagnosis_status,
+            exc_info=True,
+        )
+
+
 def _has_feature_level_issues(state: ModelLifecycleState) -> bool:
     """判断诊断结果中是否存在特征层问题，需要 FeatureReconstruction。
 
@@ -282,24 +286,37 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
             trigger_diagnosis = False
             decay_degree = "NONE"
             requires_manual_review = False
-            if result.has_alerts:
-                try:
-                    from ...repositories.monitoring_repo import MonitoringRepo
-                    mon_repo = MonitoringRepo(session)
-                    run_record = await mon_repo.get_run(result.monitoring_run_id)
-                    judgment_json = run_record.get("persistence_judgment_json") if run_record else None
-                    if judgment_json and isinstance(judgment_json, dict):
-                        trigger_diagnosis = judgment_json.get("trigger_diagnosis", False)
-                        decay_degree = judgment_json.get("decay_degree", "NONE")
-                        requires_manual_review = judgment_json.get("requires_manual_review", False)
-                        logger.info(
-                            "monitoring_persistence_judgment",
-                            monitoring_run_id=result.monitoring_run_id,
-                            trigger_diagnosis=trigger_diagnosis,
-                            decay_degree=decay_degree,
-                        )
-                except Exception:
-                    logger.warning("persistence_judgment_load_failed", exc_info=True)
+            status_7d = None
+            status_30d = None
+            diagnosis_status = None
+            persistence_judgment = None
+            try:
+                from ...repositories.monitoring_repo import MonitoringRepo
+                mon_repo = MonitoringRepo(session)
+                run_record = await mon_repo.get_run(result.monitoring_run_id)
+                judgment_json = run_record.get("persistence_judgment_json") if run_record else None
+                diagnosis_status = run_record.get("diagnosis_status") if run_record else None
+                if isinstance(judgment_json, str):
+                    judgment_json = json.loads(judgment_json)
+                if judgment_json and isinstance(judgment_json, dict):
+                    persistence_judgment = judgment_json
+                    trigger_diagnosis = bool(judgment_json.get("trigger_diagnosis", False))
+                    decay_degree = judgment_json.get("decay_degree", "NONE")
+                    requires_manual_review = bool(judgment_json.get("requires_manual_review", False))
+                    status_7d = judgment_json.get("status_7d")
+                    status_30d = judgment_json.get("status_30d")
+                    logger.info(
+                        "monitoring_persistence_judgment",
+                        monitoring_run_id=result.monitoring_run_id,
+                        has_alerts=result.has_alerts,
+                        trigger_diagnosis=trigger_diagnosis,
+                        decay_degree=decay_degree,
+                        requires_manual_review=requires_manual_review,
+                    )
+            except Exception:
+                logger.warning("persistence_judgment_load_failed", exc_info=True)
+
+            should_enter_diagnosis = trigger_diagnosis or requires_manual_review
 
             return {
                 "monitoring_run_id": result.monitoring_run_id,
@@ -311,11 +328,13 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
                 "trigger_diagnosis": trigger_diagnosis,
                 "decay_degree": decay_degree,
                 "requires_manual_review": requires_manual_review,
-                "_debug_has_alerts": result.has_alerts,
-                "_debug_alert_count": result.alert_count,
+                "status_7d": status_7d,
+                "status_30d": status_30d,
+                "diagnosis_status": diagnosis_status,
+                "persistence_judgment": persistence_judgment,
                 "current_phase": (
                     LifecyclePhase.MONITORING_COMPLETED.value
-                    if result.has_alerts
+                    if result.has_alerts or should_enter_diagnosis
                     else LifecyclePhase.NO_ALERT.value
                 ),
             }
@@ -375,7 +394,7 @@ async def diagnosis_node(state: ModelLifecycleState) -> dict:
         from ...services.diagnosis.diagnosis_service import DiagnosisService
         from ...services.knowledge_service import KnowledgeService
         from packages.models.monitoring.alert_context import AlertContext, AlertDetail
-        from packages.models.common.enums import DataTrack, Severity
+        from packages.models.common.enums import AvailabilityStatus, DataTrack, ObjectType, Severity
 
         async with async_session() as session:
             driver = await get_neo4j_driver()
@@ -386,8 +405,13 @@ async def diagnosis_node(state: ModelLifecycleState) -> dict:
             run = await mon_repo.get_run(monitoring_run_id)
             alerts = await mon_repo.get_alerts(monitoring_run_id)
 
+            # monitoring_alerts 里已包含 B1 PERSISTENCE_JUDGMENT 告警（由 _emit_persistence_alerts 写入）
+            # 不再需要合成虚拟告警
+
             if not alerts:
                 logger.info("diagnosis_node_no_alerts_skipping")
+                await mon_repo.update_diagnosis_status(monitoring_run_id, "SKIPPED")
+                await session.commit()
                 return {
                     "diagnosis_run_id": None,
                     "primary_root_cause_code": "no_alerts",
@@ -398,27 +422,34 @@ async def diagnosis_node(state: ModelLifecycleState) -> dict:
                     "current_phase": LifecyclePhase.DIAGNOSIS_COMPLETED.value,
                 }
 
-            alert_details = [
-                AlertDetail(
-                    alert_id=str(a["alert_id"]),
-                    alert_code=a["alert_code"],
-                    severity=Severity(a["severity"]) if a.get("severity") else Severity.WARNING,
-                    object_type=a.get("object_type", "MODEL"),
-                    object_code=a.get("object_code", _g(state, "model_id")),
-                    metric_code=a.get("metric_code", ""),
-                    metric_version=a.get("metric_version", "V1"),
-                    baseline_value=a.get("baseline_value"),
-                    current_value=a.get("current_value"),
-                    delta=a.get("delta"),
-                    threshold=a.get("threshold"),
-                    rule_type=a.get("rule_type"),
-                    threshold_rule_id=a.get("threshold_rule_id"),
-                    threshold_rule_version=a.get("threshold_rule_version"),
-                    availability_status=a.get("availability_status", "AVAILABLE"),
-                    metric_detail=a.get("alert_detail"),
+            alert_details = []
+            for a in alerts:
+                raw_detail = a.get("alert_detail") or {}
+                metric_detail = (
+                    raw_detail.get("metric_detail", raw_detail)
+                    if isinstance(raw_detail, dict)
+                    else raw_detail
                 )
-                for a in alerts
-            ]
+                alert_details.append(
+                    AlertDetail(
+                        alert_id=str(a["alert_id"]),
+                        alert_code=a["alert_code"],
+                        severity=Severity(a["severity"]) if a.get("severity") else Severity.WARNING,
+                        object_type=a.get("object_type", "MODEL"),
+                        object_code=a.get("object_code", _g(state, "model_id")),
+                        metric_code=a.get("metric_code", ""),
+                        metric_version=a.get("metric_version", "V1"),
+                        baseline_value=a.get("baseline_value"),
+                        current_value=a.get("current_value"),
+                        delta=a.get("delta"),
+                        threshold=a.get("threshold"),
+                        rule_type=a.get("rule_type"),
+                        threshold_rule_id=a.get("threshold_rule_id"),
+                        threshold_rule_version=a.get("threshold_rule_version"),
+                        availability_status=a.get("availability_status", "AVAILABLE"),
+                        metric_detail=metric_detail,
+                    )
+                )
 
             alert_context = AlertContext(
                 schema_version="1.0",
@@ -492,6 +523,7 @@ async def diagnosis_node(state: ModelLifecycleState) -> dict:
                     result.recommended_action.value if result.recommended_action else "MANUAL_REVIEW"
                 ),
                 "need_iteration": result.need_iteration,
+                "requires_manual_review": result.requires_manual_review or _g(state, "requires_manual_review", False),
                 "drift_features": drift_features,
                 "high_missing_features": high_missing_features,
                 "feature_importance": feature_importance,
@@ -500,10 +532,20 @@ async def diagnosis_node(state: ModelLifecycleState) -> dict:
             }
             if diag_warnings:
                 return_dict["warnings"] = diag_warnings
+            diagnosis_status = (
+                "MANUAL_REVIEW"
+                if return_dict["requires_manual_review"]
+                or return_dict["recommended_action"] == "MANUAL_REVIEW"
+                else "COMPLETED"
+            )
+            await mon_repo.update_diagnosis_status(monitoring_run_id, diagnosis_status)
+            return_dict["diagnosis_status"] = diagnosis_status
+            await session.commit()
             return return_dict
 
     except (OSError, ConnectionError, TimeoutError, _DBIntegrityError) as e:
         logger.error("diagnosis_node_infra_error", exc_info=True)
+        await _update_monitoring_diagnosis_status(monitoring_run_id, "FAILED")
         return {
             "current_phase": LifecyclePhase.FAILED.value,
             "last_error": {
@@ -514,6 +556,7 @@ async def diagnosis_node(state: ModelLifecycleState) -> dict:
         }
     except Exception as e:
         logger.error("diagnosis_node_unexpected_error", exc_info=True)
+        await _update_monitoring_diagnosis_status(monitoring_run_id, "FAILED")
         return {
             "current_phase": LifecyclePhase.FAILED.value,
             "last_error": {
@@ -2728,19 +2771,24 @@ def route_after_monitoring(
     if trigger_diag:
         return "DiagnosisNode"
     # SEVERE / requires_manual_review：即使 trigger_diagnosis=false 也进诊断
-    if _g(state, "requires_manual_review", False) and _g(state, "has_alerts", False):
+    if _g(state, "requires_manual_review", False):
         return "DiagnosisNode"
     return "NoAlertCloseNode"
 
 
 def route_after_diagnosis(
     state: ModelLifecycleState,
-) -> Literal["DiagnosisHandoffNode", "ManualReviewNode", "NoAlertCloseNode"]:
+) -> Literal["DiagnosisHandoffNode", "ManualReviewNode", "NoAlertCloseNode", "ObservationCloseNode"]:
+    if _g(state, "current_phase") == LifecyclePhase.FAILED.value:
+        return "NoAlertCloseNode"
+    action = _g(state, "recommended_action")
+    if _g(state, "requires_manual_review", False) or action == "MANUAL_REVIEW":
+        return "ManualReviewNode"
     need = _g(state, "need_iteration")
     if need is True:
         return "DiagnosisHandoffNode"
     if need is False:
-        return "NoAlertCloseNode"
+        return "ObservationCloseNode"
     return "ManualReviewNode"
 
 
