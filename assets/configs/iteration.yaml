@@ -1,5 +1,5 @@
 rule_version: iteration-rules-v1
-max_iteration_rounds: 3
+max_iteration_rounds: 2
 max_technical_retries: 3
 oscillation_threshold: 3
 training_window_policy: W1_W3_ONLY
@@ -7,6 +7,9 @@ baseline_window_id: W1
 default_training_window_ids: [W2]
 default_validation_window_ids: [W3]
 oot_window_id: W4
+# W3 确定性切分合同（严格 A7 plan_builder 消费）
+w3_validation_days: 7
+w3_split_rule_version: W3_LAST_7D_HOLDOUT_V1
 allowed_strategy_codes:
   - champion_replay
   - stable_refit
@@ -18,9 +21,16 @@ allowed_strategy_codes:
   - full_retrain
   - calibration_only
   - threshold_only
+  - incremental_retrain
+  - feature_selection_retrain
 root_cause_gate:
-  min_primary_score: 0.75
-  min_top1_top2_gap: 0.15
+  # 标定说明（2026-08-15）：诊断 PathRanker 公式为 weight×0.6 + evidence×0.4
+  #（任务二验收契约）。KG 新边初始权重 0.10（诚实初始化，无伪造有效率），
+  # 0.10 权重下所有候选最高 0.46 分，0.75 门槛使自动迭代永远不可达。
+  # 标定后：DIRECT 规范边（0.60）+ 强证据可达 ~0.67；弱先验或弱证据候选
+  # 只能到 0.26-0.43，仍被门槛挡住 → 人工复核兜底语义不变。
+  min_primary_score: 0.55
+  min_top1_top2_gap: 0.10
   min_evidence_coverage: 0.70
 missing_rates:
   watch: 0.05

@@ -34,11 +34,31 @@ from packages.models.common.enums import (
     EvidenceType,
 )
 
+from .metric_binding import has_ranking_degradation
+
+# ── 反事实修复语义（根因感知）──
+# 修复漂移特征后性能可恢复 → 说明问题是"特征层"的：
+#   对漂移类根因是 SUPPORT；对概念漂移类是 AGAINST（关系变了，修特征不该有用）。
+# 修复无用（潜力极小）→ 漂移类根因的 AGAINST；概念漂移类反而是 SUPPORT。
+_RECOVERY_SUPPORTS = {
+    "feature_drift",
+    "feature_failure",
+    "model_aging",
+    "population_shift",
+}
+_RECOVERY_AGAINST = {
+    "CONCEPT_DRIFT",
+    "FRAUD_PATTERN_SHIFT",
+    "PRIOR_PROBABILITY_SHIFT",
+}
+
 
 async def counterfactual_repair_check(
     drift_rows: list[dict],
     alert_metric_code: str,
+    root_cause_code: str | None = None,
     feature_importance: dict[str, float] | None = None,
+    metrics: list[dict] | None = None,
     **_kwargs,
 ) -> EvidenceItem:
     """R 类型验证器：反事实修复潜力评估。
@@ -46,11 +66,33 @@ async def counterfactual_repair_check(
     Args:
         drift_rows: 逐特征漂移数据
         alert_metric_code: 告警指标代码
+        root_cause_code: 正在验证的候选根因码（根因感知方向）
         feature_importance: 特征名 → 重要性分数 映射（如缺失则返回 NOT_APPLICABLE）
+        metrics: 本次监控运行的指标行（退化门槛判断）
 
     Returns:
         EvidenceItem with R-type evidence.
     """
+
+    # ── 0. 退化门槛：无排序性能退化时，反事实修复没有评估对象 ──
+    if not has_ranking_degradation(metrics):
+        return EvidenceItem(
+            evidence_id=str(uuid.uuid4()),
+            evidence_type=EvidenceType.R,
+            method_code="counterfactual_repair_check",
+            executor_version="V2",
+            normalized_score=None,
+            direction=EvidenceDirection.NEUTRAL,
+            applicable=False,
+            availability_status=AvailabilityStatus.NOT_APPLICABLE,
+            confidence_level=ConfidenceLevel.LOW,
+            evidence_detail_json={
+                "message": (
+                    "无显著排序性能退化（AUC/KS/PR_AUC/BAD_RECALL 下降 < 0.02），"
+                    "反事实修复没有可恢复的性能损失，本证据不参与评分"
+                ),
+            },
+        )
 
     # ── 前置检查：特征重要性数据是否可用 ──
     if not feature_importance:
@@ -58,7 +100,7 @@ async def counterfactual_repair_check(
             evidence_id=str(uuid.uuid4()),
             evidence_type=EvidenceType.R,
             method_code="counterfactual_repair_check",
-            executor_version="V1",
+            executor_version="V2",
             normalized_score=0.0,
             direction=EvidenceDirection.NEUTRAL,
             applicable=False,
@@ -81,7 +123,7 @@ async def counterfactual_repair_check(
             evidence_id=str(uuid.uuid4()),
             evidence_type=EvidenceType.R,
             method_code="counterfactual_repair_check",
-            executor_version="V1",
+            executor_version="V2",
             normalized_score=0.05,
             direction=EvidenceDirection.AGAINST,
             applicable=True,
@@ -124,7 +166,7 @@ async def counterfactual_repair_check(
             evidence_id=str(uuid.uuid4()),
             evidence_type=EvidenceType.R,
             method_code="counterfactual_repair_check",
-            executor_version="V1",
+            executor_version="V2",
             normalized_score=0.5,
             direction=EvidenceDirection.NEUTRAL,
             applicable=True,
@@ -138,9 +180,11 @@ async def counterfactual_repair_check(
     repair_potential = repaired_impact / total_importance
 
     # ── 3. 归一化并判定方向 ──
-    # repair_potential > 0.3 → SUPPORT
-    # repair_potential < 0.1 → AGAINST
+    # repair_potential > 0.3 → 特征层可修复
+    # repair_potential < 0.1 → 特征层不可修复
     # 中间 → NEUTRAL
+    # 根因感知：可修复对漂移类根因是 SUPPORT，对概念漂移类根因是 AGAINST；
+    # 不可修复方向相反。
 
     normalized = min(repair_potential / 0.5, 1.0)  # 0.5 是归一化分母
 
@@ -167,6 +211,31 @@ async def counterfactual_repair_check(
             f"建议结合其他证据综合判断"
         )
 
+    # ── 3b. 根因感知方向翻转（概念漂移类：可修复反而是反证）──
+    # 注意 normalized_score 的约定是"支持强度"（SUPPORT 高分=强支持，
+    # AGAINST 低分=强反证），翻转方向时必须同步翻转分数，否则排名融合
+    # 会把强反证当成强支持。
+    if root_cause_code in _RECOVERY_AGAINST and direction in {
+        EvidenceDirection.SUPPORT, EvidenceDirection.AGAINST,
+    }:
+        direction = (
+            EvidenceDirection.AGAINST
+            if direction == EvidenceDirection.SUPPORT
+            else EvidenceDirection.SUPPORT
+        )
+        normalized = round(1.0 - normalized, 4)
+        message = (
+            f"[根因感知:{root_cause_code}] " + message
+        )
+    elif root_cause_code not in _RECOVERY_SUPPORTS and direction == EvidenceDirection.SUPPORT:
+        direction = EvidenceDirection.NEUTRAL
+        confidence = ConfidenceLevel.MEDIUM
+        normalized = 0.5
+        message = (
+            f"[根因感知:{root_cause_code}] 修复可恢复性能，但对该假设不构成"
+            f"直接支持，降为中性证据。" + message
+        )
+
     # ── 4. 按贡献度排序，取 Top-5 ──
     matched_drifted.sort(key=lambda x: x["contribution"], reverse=True)
 
@@ -174,7 +243,7 @@ async def counterfactual_repair_check(
         evidence_id=str(uuid.uuid4()),
         evidence_type=EvidenceType.R,
         method_code="counterfactual_repair_check",
-        executor_version="V1",
+        executor_version="V2",
         normalized_score=round(normalized, 4),
         direction=direction,
         applicable=True,

@@ -195,16 +195,22 @@ export default function MonitoringPanel({ apiBase }: Props) {
                 return (
                   <div
                     key={r.monitoring_run_id}
-                    className={`flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer transition hover:bg-slate-50 ${
+                    className={`flex items-start gap-3 rounded-lg px-3 py-2.5 cursor-pointer transition hover:bg-slate-50 ${
                       isActive ? "bg-indigo-50 border border-indigo-100" : ""
                     }`}
                     onClick={() => selectRun(r.monitoring_run_id)}
                   >
-                    <StatusDot status={r.overall_status} />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-semibold text-slate-800 truncate">{formatValue(r.model_id)}</div>
-                      <div className="text-xs text-slate-400 font-mono">{formatValue(r.champion_version)}</div>
-                    </div>
+                      <StatusDot status={r.overall_status} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-slate-800 truncate">{formatValue(r.model_id)}</div>
+                        <div className="text-xs text-slate-400 font-mono">{formatValue(r.champion_version)}</div>
+                        <div className="mt-0.5 text-[11px] text-slate-500">
+                          生命周期{" "}
+                          <span className="font-mono text-slate-600 break-all">
+                            {r.lifecycle_run_id ?? "-"}
+                          </span>
+                        </div>
+                      </div>
                     <Badge
                       label={`${r.alert_count ?? 0} 告警`}
                       color={(r.alert_count ?? 0) > 0 ? "red" : "green"}

@@ -199,7 +199,15 @@ def build_monitor_feature_vector(
     else:
         result["detector_vote_ratio"] = 0.0
 
-    return result
+    # 补齐契约字段：缺失列填 NaN（推理时由 bundle.medians 填充）
+    from .feature_schema import SENTINEL_FEATURES
+    for feature in SENTINEL_FEATURES:
+        if feature not in result.columns:
+            result[feature] = float("nan")
+
+    # 稳定列顺序：元数据列在前，特征列在后
+    metadata_columns = [c for c in result.columns if c not in SENTINEL_FEATURES]
+    return result[metadata_columns + [f for f in SENTINEL_FEATURES if f in result.columns]]
 
 
 def select_canonical_sentinel_rows(frame: pd.DataFrame) -> pd.DataFrame:

@@ -4,52 +4,74 @@ strategies:
     strategy_code: champion_replay
     plan_code: PLAN_NO_TRAINING
     risk_level: LOW
+    primary_training_mode: NONE
     description: 修复数据或流水线后使用冻结 Champion 回放
   stable_refit:
     strategy_code: stable_refit
     plan_code: PLAN_STABLE_REFIT
     risk_level: LOW
+    primary_training_mode: FULL_RETRAIN
     description: 同算法、同特征、同超参数重新拟合
   recent_weighted_retrain:
     strategy_code: recent_weighted_retrain
     plan_code: PLAN_RECENT_WEIGHTED
     risk_level: MEDIUM
+    primary_training_mode: FULL_RETRAIN
     description: 对近期成熟样本提高权重
   sliding_window_retrain:
     strategy_code: sliding_window_retrain
     plan_code: PLAN_SLIDING_RECENT
     risk_level: MEDIUM
+    primary_training_mode: FULL_RETRAIN
     description: 使用持续稳定的新分布滑动窗口训练
   segment_weighted_retrain:
     strategy_code: segment_weighted_retrain
     plan_code: PLAN_SEGMENT_WEIGHTED
     risk_level: MEDIUM
+    primary_training_mode: FULL_RETRAIN
     description: 针对受损客群重新加权
   regularized_retrain:
     strategy_code: regularized_retrain
     plan_code: PLAN_REGULARIZED
     risk_level: MEDIUM
+    primary_training_mode: PARAMETER_TUNING
     description: 正则化、简化模型并采用时间验证
   feature_reconstruction:
     strategy_code: feature_reconstruction
     plan_code: PLAN_FEATURE_RECONSTRUCTION
     risk_level: HIGH
+    primary_training_mode: FEATURE_RECONSTRUCTION
     description: 过滤或重构脆弱、失效特征
   full_retrain:
     strategy_code: full_retrain
     plan_code: PLAN_FULL_RETRAIN
     risk_level: HIGH
+    primary_training_mode: FULL_RETRAIN
     description: 全局关系变化后的完整重训
   calibration_only:
     strategy_code: calibration_only
     plan_code: PLAN_CALIBRATION_ONLY
     risk_level: MEDIUM
+    primary_training_mode: NONE
     description: 排序稳定时仅调整概率校准器
   threshold_only:
     strategy_code: threshold_only
     plan_code: PLAN_THRESHOLD_ONLY
     risk_level: HIGH
+    primary_training_mode: NONE
     description: 排序与校准正常时调整业务阈值
+  incremental_retrain:
+    strategy_code: incremental_retrain
+    plan_code: PLAN_INCREMENTAL
+    risk_level: MEDIUM
+    primary_training_mode: INCREMENTAL_TRAIN
+    description: SUSTAINED_30D 稳定渐变漂移时在 Champion 基础上增量续训
+  feature_selection_retrain:
+    strategy_code: feature_selection_retrain
+    plan_code: PLAN_FEATURE_SELECTION
+    risk_level: MEDIUM
+    primary_training_mode: FEATURE_SELECTION
+    description: W3失败归因特征冗余/脆弱后筛选特征并重训
 root_cause_rules:
   DATA_MISSING:
     action: DATA_REPAIR
@@ -85,7 +107,7 @@ root_cause_rules:
     strategy_codes: [segment_weighted_retrain]
   CONCEPT_DRIFT_GRADUAL:
     action: MODEL_ITERATION
-    strategy_codes: [recent_weighted_retrain]
+    strategy_codes: [incremental_retrain]
   CONCEPT_DRIFT_SUDDEN:
     action: MODEL_ITERATION
     strategy_codes: [sliding_window_retrain]
@@ -100,7 +122,7 @@ root_cause_rules:
     strategy_codes: [stable_refit]
   FEATURE_FRAGILITY:
     action: MODEL_ITERATION
-    strategy_codes: [regularized_retrain, feature_reconstruction]
+    strategy_codes: [regularized_retrain, feature_reconstruction, feature_selection_retrain]
   OVERFITTING:
     action: MODEL_ITERATION
     strategy_codes: [regularized_retrain]

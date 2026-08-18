@@ -10,7 +10,6 @@ import json
 import os
 import urllib.error
 import urllib.request
-import uuid
 
 from celery.utils.log import get_task_logger
 
@@ -46,35 +45,29 @@ def calibrate(self, plan: dict):
     输入: {calibration_plan_id, champion_version, lifecycle_run_id}
     输出: calibrator artifact → MinIO → callback
     """
-    plan_id = plan.get("calibration_plan_id", str(uuid.uuid4()))
-    champion = plan.get("champion_version", "v1")
+    plan_id = str(plan.get("calibration_plan_id") or "")
+    if not plan_id:
+        raise ValueError("CALIBRATION_PLAN_ID_REQUIRED")
     run_id = plan.get("lifecycle_run_id", "")
 
     logger.info("calibrate_started plan=%s", plan_id)
 
     try:
-        from sklearn.isotonic import IsotonicRegression
-        import joblib as jl
-        import io as _io
-        import numpy as np
+        from apps.modelops_api.services.iteration.action_execution_service import (
+            execute_calibration,
+        )
 
-        # Mock: 训练 IsotonicRegression
-        y_pred = np.random.beta(2, 5, 5000)
-        y_true = (y_pred > 0.5).astype(int)
-        iso = IsotonicRegression(out_of_bounds="clip").fit(y_pred, y_true)
-
-        buf = _io.BytesIO()
-        jl.dump(iso, buf)
-        buf.seek(0)
-        artifact = f"s3://riskitem/calibrators/{champion}_calibrated_v1.joblib"
+        result = execute_calibration(plan)
 
         logger.info("calibrate_done plan=%s", plan_id)
 
         # 回调
         callback_payload = {
-            "artifact_uri": artifact,
-            "status": "SUCCEEDED",
-            "metrics": {"brier": 0.12, "ece": 0.03},
+            "artifact_uri": result["artifact_uri"],
+            "artifact_checksum": result["artifact_checksum"],
+            "status": result["status"],
+            "metrics": result["metrics"],
+            "consumption_receipt": result["consumption_receipt"],
             "external_task_id": getattr(self.request, "id", None),
             "resume_lifecycle": bool(run_id),
         }
@@ -83,10 +76,22 @@ def calibrate(self, plan: dict):
             callback_payload,
         )
 
-        return {"status": "SUCCEEDED", "artifact": artifact}
+        return result
 
     except Exception as exc:
         logger.error("calibrate_failed plan=%s err=%s", plan_id, exc)
+        try:
+            _api_post(
+                f"/api/internal/iteration/executions/CALIBRATION/{plan_id}/callback",
+                {
+                    "status": "FAILED",
+                    "error_message": str(exc),
+                    "external_task_id": getattr(self.request, "id", None),
+                    "resume_lifecycle": bool(run_id),
+                },
+            )
+        except Exception:
+            logger.error("calibrate_failure_callback_failed plan=%s", plan_id)
         raise self.retry(exc=exc)
 
 
@@ -101,30 +106,30 @@ def search_threshold(self, plan: dict):
     输入: {threshold_plan_id, champion_version, lifecycle_run_id}
     输出: threshold.json → MinIO → callback
     """
-    plan_id = plan.get("threshold_plan_id", str(uuid.uuid4()))
-    champion = plan.get("champion_version", "v1")
+    plan_id = str(plan.get("threshold_plan_id") or "")
+    if not plan_id:
+        raise ValueError("THRESHOLD_PLAN_ID_REQUIRED")
     run_id = plan.get("lifecycle_run_id", "")
 
     logger.info("threshold_search_started plan=%s", plan_id)
 
     try:
-        import json
-        import numpy as np
+        from apps.modelops_api.services.iteration.action_execution_service import (
+            execute_threshold_search,
+        )
 
-        # Mock: 阈值搜索
-        y_pred = np.random.beta(2, 5, 5000)
-        y_true = (y_pred > 0.5).astype(int)
-        thresholds = np.arange(0.3, 0.71, 0.01)
-        best = {"threshold": 0.45, "f1": 0.72, "precision": 0.68, "recall": 0.76}
-        artifact = f"s3://riskitem/thresholds/{champion}_threshold_v1.json"
+        result = execute_threshold_search(plan)
+        best = result["metrics"]["after"]
 
         logger.info("threshold_search_done plan=%s best=%.2f", plan_id, best["threshold"])
 
         # 回调
         callback_payload = {
-            "artifact_uri": artifact,
-            "status": "SUCCEEDED",
-            "metrics": best,
+            "artifact_uri": result["artifact_uri"],
+            "artifact_checksum": result["artifact_checksum"],
+            "status": result["status"],
+            "metrics": result["metrics"],
+            "consumption_receipt": result["consumption_receipt"],
             "external_task_id": getattr(self.request, "id", None),
             "resume_lifecycle": bool(run_id),
         }
@@ -133,15 +138,74 @@ def search_threshold(self, plan: dict):
             callback_payload,
         )
 
-        return {"status": "SUCCEEDED", "artifact": artifact, "threshold": best["threshold"]}
+        return result
 
     except Exception as exc:
         logger.error("threshold_search_failed plan=%s err=%s", plan_id, exc)
+        try:
+            _api_post(
+                f"/api/internal/iteration/executions/THRESHOLD/{plan_id}/callback",
+                {
+                    "status": "FAILED",
+                    "error_message": str(exc),
+                    "external_task_id": getattr(self.request, "id", None),
+                    "resume_lifecycle": bool(run_id),
+                },
+            )
+        except Exception:
+            logger.error("threshold_failure_callback_failed plan=%s", plan_id)
         raise self.retry(exc=exc)
 
 
 # ═══════════════════════════════════════════
-# 3. 数据修复完成回调端点辅助
+# 3. 数据/管道修复 + 同窗回放
+# ═══════════════════════════════════════════
+
+@app.task(bind=True, name="workers.executor_tasks.repair_and_replay", max_retries=1)
+def repair_and_replay(self, plan: dict):
+    plan_id = str(plan.get("repair_plan_id") or "")
+    if not plan_id:
+        raise ValueError("REPAIR_PLAN_ID_REQUIRED")
+    run_id = plan.get("lifecycle_run_id", "")
+    logger.info("repair_and_replay_started plan=%s", plan_id)
+    try:
+        from apps.modelops_api.services.iteration.action_execution_service import (
+            execute_repair_and_replay,
+        )
+
+        result = execute_repair_and_replay(plan)
+        _api_post(
+            f"/api/internal/iteration/executions/REPAIR/{plan_id}/callback",
+            {
+                "artifact_uri": result["artifact_uri"],
+                "artifact_checksum": result["artifact_checksum"],
+                "status": result["status"],
+                "metrics": result["metrics"],
+                "consumption_receipt": result["consumption_receipt"],
+                "external_task_id": getattr(self.request, "id", None),
+                "resume_lifecycle": bool(run_id),
+            },
+        )
+        return result
+    except Exception as exc:
+        logger.error("repair_and_replay_failed plan=%s err=%s", plan_id, exc)
+        try:
+            _api_post(
+                f"/api/internal/iteration/executions/REPAIR/{plan_id}/callback",
+                {
+                    "status": "FAILED",
+                    "error_message": str(exc),
+                    "external_task_id": getattr(self.request, "id", None),
+                    "resume_lifecycle": bool(run_id),
+                },
+            )
+        except Exception:
+            logger.error("repair_failure_callback_failed plan=%s", plan_id)
+        raise self.retry(exc=exc)
+
+
+# ═══════════════════════════════════════════
+# 4. 兼容旧外部修复通知（不再作为正式 A3/A4 成功证据）
 # ═══════════════════════════════════════════
 
 @app.task(bind=True, name="workers.executor_tasks.notify_repair_complete", max_retries=3)
@@ -152,16 +216,22 @@ def notify_repair_complete(self, repair_info: dict):
     """
     plan_id = repair_info.get("repair_plan_id", "")
     run_id = repair_info.get("lifecycle_run_id", "")
-    status = repair_info.get("status", "SUCCEEDED")
+    status = str(repair_info.get("status") or "").upper()
+    if status not in {"SUCCEEDED", "FAILED"}:
+        raise ValueError("REPAIR_STATUS_EXPLICIT_REQUIRED")
 
     logger.info("repair_notify plan=%s status=%s", plan_id, status)
 
     try:
         _api_post(
             f"/api/internal/iteration/repair/{plan_id}/complete?lifecycle_run_id={run_id}",
-            {"status": "SUCCEEDED", "repair_plan_id": plan_id},
+            {
+                **repair_info,
+                "status": status,
+                "repair_plan_id": plan_id,
+            },
         )
-        return {"status": "OK", "lifecycle_resumed": True}
+        return {"status": status, "lifecycle_resumed": True}
     except Exception as exc:
         logger.error("repair_notify_failed plan=%s err=%s", plan_id, exc)
         raise self.retry(exc=exc)

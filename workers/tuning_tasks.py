@@ -59,30 +59,40 @@ def run_tuning(self, plan_input: dict):
     logger.info("tuning_started plan=%s algorithm=%s trials=%d", plan_id, algorithm, len(trials_data))
 
     try:
-        # ── 1. Load data ──
+        # ── 1. Load data（时间隔离：W2 只训练、W3 只评分，禁止合并随机切分）──
         from apps.modelops_api.services.monitoring.window_loader import load_window
 
-        frames = []
-        for wid in window_ids:
+        train_frames: list = []
+        val_frames: list = []
+        for wid in training_window_ids:
             try:
-                frames.append(load_window(wid))
+                train_frames.append(load_window(wid))
             except Exception as exc:
                 logger.warning("tuning_load_window_failed window=%s err=%s", wid, exc)
-        if not frames:
+        for wid in validation_window_ids:
+            try:
+                val_frames.append(load_window(wid))
+            except Exception as exc:
+                logger.warning("tuning_load_window_failed window=%s err=%s", wid, exc)
+        if not train_frames or not val_frames:
             raise ValueError("No data windows loaded for tuning")
-        df = pd.concat(frames, ignore_index=True)
+        train_df = pd.concat(train_frames, ignore_index=True)
+        val_df = pd.concat(val_frames, ignore_index=True)
 
         exclude = {"sample_id", "apply_time", "is_bad", "y_pred_proba", "risk_score"}
-        feature_cols = [c for c in df.columns if c not in exclude and df[c].dtype in ("int64", "float64")]
+        feature_cols = [c for c in train_df.columns if c not in exclude and train_df[c].dtype in ("int64", "float64")]
         target = "is_bad"
-        X = df[feature_cols].fillna(0)
-        y = df[target]
+        X_train = train_df[feature_cols].fillna(0)
+        y_train = train_df[target]
+        X_val = val_df[feature_cols].fillna(0)
+        y_val = val_df[target]
 
-        # Use a subset for faster tuning (first 10k rows)
-        if len(X) > 10000:
-            X, _, y, _ = train_test_split(X, y, train_size=10000, random_state=seed, stratify=y)
-
-        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=seed, stratify=y)
+        # 训练集可随机降采样提速；验证集保持完整、时间隔离
+        if len(X_train) > 10000:
+            X_train, _, y_train, _ = train_test_split(
+                X_train, y_train, train_size=10000,
+                random_state=seed, stratify=y_train,
+            )
         logger.info("tuning_data_ready train=%d val=%d features=%d", len(X_train), len(X_val), len(feature_cols))
 
         # ── 2. Run trials ──

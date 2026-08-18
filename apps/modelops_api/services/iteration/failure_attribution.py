@@ -37,6 +37,7 @@ class FailureAttributionService:
             f"针对 {gate.value} 调整策略并生成新的 experiment_id"
             for gate in report.failed_gate_codes
         ]
+        unstable_features = _extract_unstable_features(report)
         return FailureReport(
             failure_report_id=str(uuid4()),
             iteration_run_id=report.iteration_run_id,
@@ -48,4 +49,40 @@ class FailureAttributionService:
             adjustment_recommendations=recommendations,
             retryable=True,
             created_at=datetime.now(UTC),
+            unstable_feature_codes=unstable_features,
+            feature_evidence_source=(
+                "QUALIFICATION_STABILITY_GATE_REASONS"
+                if unstable_features else None
+            ),
         )
+
+
+def _extract_unstable_features(report: QualificationReport) -> list[str]:
+    """从 STABILITY 门失败原因中提取经归因确认的不稳定特征码。
+
+    保守策略：只在原因文本里出现显式 feature 标注时提取；
+    提取不到就返回空列表 —— 空列表不得授予
+    unstable_feature_subset_confirmed / feature_selection_evidence_available。
+    """
+    import re
+
+    from packages.models.common.enums import QualificationStatus
+
+    features: list[str] = []
+    for gate in report.gate_results:
+        if (
+            gate.gate_code.value != "STABILITY"
+            or gate.status == QualificationStatus.PASSED
+        ):
+            continue
+        # 结构化来源优先（QualificationService 从特征级 PSI 计算）
+        if gate.unstable_feature_codes:
+            features.extend(gate.unstable_feature_codes)
+            continue
+        # 兜底：原因文本中的显式 feature 标注
+        for reason in gate.reasons:
+            for match in re.findall(
+                r"feature[=\s:：]+([A-Za-z0-9_]+)", str(reason), re.IGNORECASE
+            ):
+                features.append(match)
+    return sorted(set(features))

@@ -12,12 +12,12 @@ VALID_DIRECTIONS = {"SUPPORT", "AGAINST", "NEUTRAL"}
 VALID_DATA_TRACKS = {"NATURAL", "SCENARIO"}
 
 SCENARIO_TO_ROOT_CAUSE: dict[str, str] = {
-    "bad_rate_shift": "label_distribution_shift",
-    "concept_drift": "label_distribution_shift",
+    "bad_rate_shift": "PRIOR_PROBABILITY_SHIFT",
+    "concept_drift": "CONCEPT_DRIFT",
     "covariate_drift": "feature_drift",
     "customer_mix_shift": "population_shift",
     "feature_staleness": "data_pipeline_issue",
-    "fraud_pattern_shift": "label_distribution_shift",
+    "fraud_pattern_shift": "FRAUD_PATTERN_SHIFT",
     "key_feature_failure": "feature_failure",
     "missing_rate_anomaly": "data_quality_issue",
     "multi_root_cause": "data_quality_issue",

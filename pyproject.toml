@@ -20,6 +20,7 @@ dependencies = [
   "httpx>=0.28,<1",
   "structlog>=24.0,<25",
   "scikit-learn>=1.5,<2",
+  "lightgbm>=4.5,<5",
   "mlflow>=2.16,<3",
   "langgraph>=0.3,<1",
   "langgraph-checkpoint-postgres>=2.0,<3",

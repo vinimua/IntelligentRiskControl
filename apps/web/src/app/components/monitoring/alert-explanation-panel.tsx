@@ -13,21 +13,25 @@ function alertSource(alert: AlertItem): string {
   const nestedMetricDetail =
     detail && typeof detail === "object" ? (detail.metric_detail as Record<string, unknown> | undefined) : undefined;
   const source = alert.source || (nestedMetricDetail?.source as string | undefined);
-  return source === "PERSISTENCE_JUDGMENT" ? "PERSISTENCE_JUDGMENT" : "SUMMARY_THRESHOLD";
+  if (source === "WP08_SENTINEL") return "WP08_SENTINEL";
+  if (source === "PERSISTENCE_JUDGMENT") return "PERSISTENCE_JUDGMENT";
+  return "SUMMARY_THRESHOLD";
 }
 
+const SOURCE_LABELS: Record<string, string> = {
+  SUMMARY_THRESHOLD: "指标阈值",
+  PERSISTENCE_JUDGMENT: "B1 持续性",
+  WP08_SENTINEL: "Sentinel 异常",
+};
+
 function sourceLabel(source: string): string {
-  return (
-    {
-      SUMMARY_THRESHOLD: "汇总阈值",
-      PERSISTENCE_JUDGMENT: "B1持续性",
-    }[source] || source
-  );
+  return SOURCE_LABELS[source] || source;
 }
 
 export default function AlertExplanationPanel({ summary, alerts }: Props) {
   const summaryAlerts = alerts.filter((a) => alertSource(a) === "SUMMARY_THRESHOLD");
   const persistenceAlerts = alerts.filter((a) => alertSource(a) === "PERSISTENCE_JUDGMENT");
+  const sentinelAlerts = alerts.filter((a) => alertSource(a) === "WP08_SENTINEL");
   const hasAlerts = alerts.length > 0;
   const isIncomplete =
     summary && (summary.calculated < summary.total_metrics || summary.rules_enabled < summary.total_metrics);
@@ -45,6 +49,9 @@ export default function AlertExplanationPanel({ summary, alerts }: Props) {
               指标告警 <span className="font-semibold text-red-600">{summaryAlerts.length}</span> 条
               {persistenceAlerts.length > 0 && (
                 <> · B1 持续性判定 <span className="font-semibold text-indigo-600">{persistenceAlerts.length}</span> 条</>
+              )}
+              {sentinelAlerts.length > 0 && (
+                <> · Sentinel 异常 <span className="font-semibold text-violet-600">{sentinelAlerts.length}</span> 条</>
               )}
             </p>
 
@@ -64,6 +71,16 @@ export default function AlertExplanationPanel({ summary, alerts }: Props) {
                 <p className="text-[10px] font-semibold uppercase text-slate-400">持续性判定</p>
                 {persistenceAlerts.map((a, i) => (
                   <AlertRow key={a.alert_id || i} alert={a} source="PERSISTENCE_JUDGMENT" />
+                ))}
+              </div>
+            )}
+
+            {/* WP08_SENTINEL 告警 */}
+            {sentinelAlerts.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-[10px] font-semibold uppercase text-slate-400">Sentinel 异常</p>
+                {sentinelAlerts.map((a, i) => (
+                  <AlertRow key={a.alert_id || i} alert={a} source="WP08_SENTINEL" />
                 ))}
               </div>
             )}
@@ -170,7 +187,11 @@ function AlertRow({ alert: a, source }: { alert: AlertItem; source: string }) {
         </span>
         <span
           className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-            source === "PERSISTENCE_JUDGMENT" ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-600"
+            source === "WP08_SENTINEL"
+              ? "bg-violet-100 text-violet-700"
+              : source === "PERSISTENCE_JUDGMENT"
+                ? "bg-indigo-100 text-indigo-700"
+                : "bg-slate-100 text-slate-600"
           }`}
         >
           {sourceLabel(source)}
@@ -183,6 +204,10 @@ function AlertRow({ alert: a, source }: { alert: AlertItem; source: string }) {
           <div><span className="text-slate-400">阈值</span><p className="font-mono text-slate-600">{formatValue(a.threshold)}</p></div>
           <div><span className="text-slate-400">变化</span><p className="font-mono text-slate-600">{formatValue(a.delta)}</p></div>
         </div>
+      ) : source === "WP08_SENTINEL" ? (
+        <p className="mt-1 text-xs text-violet-600">
+          Sentinel 单窗口异常触发，异常概率 {(a.current_value != null ? (Number(a.current_value) * 100).toFixed(1) : "?")}% ≥ 阈值
+        </p>
       ) : (
         <p className="mt-1 text-xs text-slate-500">由 B1 持续性判定触发，表示窗口级指标持续恶化</p>
       )}

@@ -114,6 +114,74 @@ def load_all_windows() -> dict[str, pd.DataFrame]:
     return {wid: load_window(wid) for wid in WINDOW_IDS}
 
 
+def resolve_monitoring_baseline_window(
+    model_id: str,
+    champion_version: str = "champion_v1",
+) -> str:
+    """Return the model-specific monitoring baseline window.
+
+    Formal full-feature champions record their healthy confirmation window in
+    ``training_manifest.json``. That window is a better monitoring reference
+    than the in-sample fitting window. Models without an explicit declaration
+    keep the legacy W0 baseline.
+    """
+    bundle = _CHAMPION_ROOT / model_id / champion_version
+    manifest_path = bundle / "training_manifest.json"
+    if not manifest_path.is_file():
+        return "W0"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    baseline_window = str(
+        manifest.get("monitoring_reference_window")
+        or manifest.get("healthy_confirmation_boundary")
+        or "W0"
+    ).strip()
+    return baseline_window if baseline_window in WINDOW_IDS else "W0"
+
+
+def resolve_monitoring_window_ids(
+    model_id: str,
+    champion_version: str = "champion_v1",
+    *,
+    current_window_id: str = "W3",
+) -> tuple[str, list[str]]:
+    """Resolve baseline and post-baseline windows for monitoring.
+
+    W4 is intentionally excluded here because task-three monitoring and
+    iteration must not consume final OOT labels.
+    """
+    baseline_window_id = resolve_monitoring_baseline_window(
+        model_id, champion_version
+    )
+    allowed_windows = [wid for wid in WINDOW_IDS if wid != "W4"]
+    if baseline_window_id not in allowed_windows:
+        baseline_window_id = "W0"
+    baseline_index = allowed_windows.index(baseline_window_id)
+    current_index = allowed_windows.index(current_window_id)
+    if current_index <= baseline_index:
+        raise WindowContractError(
+            f"{model_id} monitoring current window {current_window_id} must be after "
+            f"baseline {baseline_window_id}"
+        )
+    return baseline_window_id, allowed_windows[baseline_index + 1: current_index + 1]
+
+
+def add_apply_time_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add Champion V1 time features derived from ``apply_time``."""
+    if "apply_time" not in frame.columns:
+        return frame
+    df = frame.copy()
+    ts = pd.to_datetime(df["apply_time"])
+    hour = ts.dt.hour + ts.dt.minute / 60.0
+    weekday = ts.dt.weekday
+    df["apply_hour_sin"] = np.sin(2 * np.pi * hour / 24)
+    df["apply_hour_cos"] = np.cos(2 * np.pi * hour / 24)
+    df["apply_weekday_sin"] = np.sin(2 * np.pi * weekday / 7)
+    df["apply_weekday_cos"] = np.cos(2 * np.pi * weekday / 7)
+    df["apply_is_weekend"] = (weekday >= 5).astype(float)
+    df["apply_is_night"] = ((ts.dt.hour < 6) | (ts.dt.hour >= 22)).astype(float)
+    return df
+
+
 def load_champion_model(model_id: str = "credit_model_001"):
     """加载一个 Champion V1 模型。
 
@@ -151,7 +219,7 @@ def predict_on_window(
     model, calibrator, feature_names = load_champion_model(model_id)
 
     # Champion 模型需要的时间特征工程
-    df = window_df.copy()
+    df = add_apply_time_features(window_df)
     ts = pd.to_datetime(df["apply_time"])
     hour = ts.dt.hour + ts.dt.minute / 60.0
     weekday = ts.dt.weekday

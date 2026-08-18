@@ -13,7 +13,12 @@ from ..neo4j_db import get_neo4j_driver
 from ..repositories.monitoring_repo import MonitoringRepo
 from ..services.knowledge_service import KnowledgeService
 from ..services.monitoring.monitoring_service import MonitoringService
-from ..services.monitoring.window_loader import load_window_with_predictions
+from ..services.monitoring.window_loader import (
+    WINDOW_IDS,
+    WindowContractError,
+    load_window_with_predictions,
+    resolve_monitoring_window_ids,
+)
 
 router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
 
@@ -455,17 +460,79 @@ async def trigger_run(
     knowledge = KnowledgeService(driver)
     service = MonitoringService(db, knowledge)
 
-    w0_df = load_window_with_predictions("W0", body.model_id)
-    w1_df = load_window_with_predictions("W1", body.model_id)
-    w2_df = load_window_with_predictions("W2", body.model_id)
-    w3_df = load_window_with_predictions("W3", body.model_id)
+    current_window_id = body.current_window_id or "W3"
+    if body.baseline_window_id:
+        allowed_windows = [wid for wid in WINDOW_IDS if wid != "W4"]
+        if (
+            body.baseline_window_id not in allowed_windows
+            or current_window_id not in allowed_windows
+            or allowed_windows.index(current_window_id)
+            <= allowed_windows.index(body.baseline_window_id)
+        ):
+            raise WindowContractError(
+                "baseline_window_id/current_window_id must be ordered within W0-W3"
+            )
+        baseline_window_id = body.baseline_window_id
+        current_window_ids = allowed_windows[
+            allowed_windows.index(baseline_window_id) + 1:
+            allowed_windows.index(current_window_id) + 1
+        ]
+    else:
+        baseline_window_id, current_window_ids = resolve_monitoring_window_ids(
+            body.model_id, body.champion_version, current_window_id=current_window_id,
+        )
+
+    baseline_df = load_window_with_predictions(baseline_window_id, body.model_id)
+    current_dfs = [
+        load_window_with_predictions(window_id, body.model_id)
+        for window_id in current_window_ids
+    ]
+    w1_df = current_dfs[0]
+    w2_df = current_dfs[1] if len(current_dfs) > 1 else current_dfs[0]
+    w3_df = current_dfs[-1]
 
     result = await service.run_full_pipeline(
         model_id=body.model_id,
         champion_version=body.champion_version,
-        w0_df=w0_df, w1_df=w1_df, w2_df=w2_df, w3_df=w3_df,
+        w0_df=baseline_df, w1_df=w1_df, w2_df=w2_df, w3_df=w3_df,
+        baseline_window_id=baseline_window_id,
+        current_window_id=current_window_ids[-1],
+        current_window_dfs=current_dfs,
         trace_id=request_trace_id(request),
     )
+
+    # A7 §8: 独立监测事件入口 → 由 TriggerService 创建/续接生命周期
+    #（无活动 run 时新建；已有活动 run 时去重跳过）。
+    # 先读取真实 Sentinel 信号（其告警严重度仅为 WARNING，
+    # 不能用 HIGH/CRITICAL 代替），再决定是否进入触发分支。
+    import json as _json
+    from ..repositories.monitoring_repo import MonitoringRepo
+
+    mon_run = await MonitoringRepo(db).get_run(result.monitoring_run_id)
+    judgment = mon_run.get("persistence_judgment_json") if mon_run else None
+    if isinstance(judgment, str):
+        judgment = _json.loads(judgment)
+    sentinel_triggered = bool(
+        ((judgment or {}).get("sentinel_evidence") or {}).get("triggered")
+    )
+
+    trigger_result = None
+    max_sev = result.max_alert_severity.value if result.max_alert_severity else None
+    if sentinel_triggered or max_sev in {"HIGH", "CRITICAL"}:
+        from ..services.lifecycle_triggers import (
+            AnomalyLifecycleTriggerService,
+            ThresholdLifecycleTriggerService,
+        )
+        trigger_svc = (
+            AnomalyLifecycleTriggerService(db)
+            if sentinel_triggered
+            else ThresholdLifecycleTriggerService(db)
+        )
+        trigger_result = await trigger_svc.evaluate(
+            model_id=body.model_id,
+            champion_version=body.champion_version,
+            fingerprint_detail=result.monitoring_run_id,
+        )
 
     return _envelope(
         request,
@@ -473,8 +540,16 @@ async def trigger_run(
             "monitoring_run_id": result.monitoring_run_id,
             "has_alerts": result.has_alerts,
             "alert_count": result.alert_count,
-            "max_alert_severity": result.max_alert_severity.value if result.max_alert_severity else None,
+            "max_alert_severity": max_sev,
             "total_metrics": len(result.metrics),
+            "auto_trigger": (
+                {
+                    "trigger_type": trigger_result.lifecycle_run_id and
+                    ("lifecycle_started" if trigger_result.allowed else trigger_result.reason)
+                }
+                if trigger_result is not None
+                else None
+            ),
         },
         message="full pipeline completed",
     )
@@ -551,3 +626,106 @@ async def trigger_parallel_cycle(
     )
 
     return _envelope(request, result, message="parallel monitoring cycle completed")
+
+
+# ── Sentinel 训练 API ──
+
+
+class GenerateSentinelDatasetRequest(BaseModel):
+    model_id: str = "credit_model_001"
+    champion_version: str = "champion_v1"
+    base_window_ids: list[str] = Field(default_factory=lambda: ["W1", "W2", "W3"])
+    scenario_ids: list[str] | None = None
+    random_seed: int = 2026
+
+
+class StartSentinelTrainingRequest(BaseModel):
+    model_id: str = Field(min_length=1, max_length=100)
+    champion_version: str = Field(min_length=1, max_length=100)
+    dataset_snapshot_id: str
+
+
+@router.post("/sentinel/datasets", status_code=201)
+async def generate_sentinel_dataset(
+    request: Request,
+    body: GenerateSentinelDatasetRequest,
+):
+    """生成 Sentinel 训练数据集：场景注入→监测→验收→特征构建→保存快照。"""
+    from ..services.monitoring.sentinel.scenario_training_pipeline import (
+        build_sentinel_training_dataset,
+        save_training_snapshot,
+    )
+
+    training_df, stats = build_sentinel_training_dataset(
+        model_id=body.model_id,
+        champion_version=body.champion_version,
+        base_window_ids=body.base_window_ids,
+        scenario_ids=body.scenario_ids,
+        random_seed=body.random_seed,
+    )
+
+    path = save_training_snapshot(training_df, stats, body.model_id)
+
+    return _envelope(request, {
+        "storage_uri": path,
+        "row_count": len(training_df),
+        "accepted_normal_count": stats.get("accepted_normal", 0),
+        "accepted_anomaly_count": stats.get("accepted_anomaly", 0),
+        "uncertain_count": stats.get("uncertain", 0),
+        "total_instances": stats.get("total_instances", 0),
+    }, "sentinel training dataset generated")
+
+
+@router.post("/sentinel/training-runs", status_code=202)
+async def start_sentinel_training(
+    request: Request,
+    body: StartSentinelTrainingRequest,
+):
+    """人工派发 Sentinel 训练任务到 Celery Worker。"""
+    import uuid as _uuid
+    from workers.app import app as celery_app
+    from ..repositories.snapshot_repo import SnapshotRepo
+    from ..database import async_session
+
+    async with async_session() as s:
+        snap = await SnapshotRepo(s).get_by_id(body.dataset_snapshot_id)
+    if snap is None:
+        raise NotFoundError("训练数据快照不存在")
+
+    training_run_id = str(_uuid.uuid4())
+    task = celery_app.send_task(
+        "workers.sentinel_tasks.train_sentinel_model",
+        kwargs={
+            "model_id": body.model_id,
+            "champion_version": body.champion_version,
+            "dataset_snapshot_id": body.dataset_snapshot_id,
+            "training_run_id": training_run_id,
+        },
+    )
+
+    return _envelope(request, {
+        "training_run_id": training_run_id,
+        "celery_task_id": task.id,
+        "status": "QUEUED",
+    }, "sentinel training queued")
+
+
+@router.get("/sentinel/training-runs/{task_id}")
+async def get_sentinel_training_status(
+    task_id: str,
+    request: Request,
+):
+    """查询 Sentinel 训练任务状态（临时方案，后续用审计表）。"""
+    from celery.result import AsyncResult
+    from workers.app import app as celery_app
+
+    result = AsyncResult(task_id, app=celery_app)
+    data = {
+        "celery_task_id": task_id,
+        "status": result.status,
+    }
+    if result.successful():
+        data["result"] = result.result
+    elif result.failed():
+        data["error"] = str(result.result)
+    return _envelope(request, data)

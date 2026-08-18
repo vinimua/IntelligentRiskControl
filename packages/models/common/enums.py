@@ -9,6 +9,9 @@ from enum import Enum
 class DataTrack(str, Enum):
     NATURAL = "NATURAL"
     SCENARIO = "SCENARIO"
+    # 纯审计轨道：不参与权重校准（如诊断置信度观测），
+    # 只有真实执行 + W3/W4 完成 + 生命周期结果冻结才允许 NATURAL
+    AUDIT = "AUDIT"
 
 
 # ── 严重度 ──
@@ -154,6 +157,8 @@ class QualificationStatus(str, Enum):
     PASSED = "PASSED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
+    # 证据不可用悬置（如 OOT 指标缺失）：不淘汰候选，等待补测
+    INCONCLUSIVE = "INCONCLUSIVE"
 
 
 class IterationExitReason(str, Enum):
@@ -210,6 +215,16 @@ class TriggerType(str, Enum):
     ABNORMAL_TRIGGER = "ABNORMAL_TRIGGER"
     MANUAL_TRIGGER = "MANUAL_TRIGGER"
     DEPLOYMENT_FAILURE_ANALYSIS = "DEPLOYMENT_FAILURE_ANALYSIS"
+
+
+# ── 训练模式（A7 实施定稿 §7 正式枚举）──
+class TrainingMode(str, Enum):
+    FULL_RETRAIN = "FULL_RETRAIN"
+    INCREMENTAL_TRAIN = "INCREMENTAL_TRAIN"
+    PARAMETER_TUNING = "PARAMETER_TUNING"
+    FEATURE_SELECTION = "FEATURE_SELECTION"
+    FEATURE_RECONSTRUCTION = "FEATURE_RECONSTRUCTION"
+    NONE = "NONE"
 
 
 # ── 生命周期阶段 ──

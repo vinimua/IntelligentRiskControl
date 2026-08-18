@@ -35,11 +35,14 @@ from packages.models.common.enums import (
     EvidenceType,
 )
 
+from .metric_binding import has_ranking_degradation
+
 
 async def permutation_importance_check(
     drift_rows: list[dict],
     alert_metric_code: str,
     feature_importance: dict[str, float] | None = None,
+    metrics: list[dict] | None = None,
     **_kwargs,
 ) -> EvidenceItem:
     """I 类型验证器：漂移特征的重要性评估。
@@ -50,10 +53,32 @@ async def permutation_importance_check(
         drift_rows: 逐特征漂移数据
         alert_metric_code: 告警指标代码
         feature_importance: 特征名 → 重要性分数 映射
+        metrics: 本次监控运行的指标行（退化门槛判断）
 
     Returns:
         EvidenceItem with I-type evidence.
     """
+
+    # ── 0. 退化门槛：无排序性能退化时，"漂移特征不重要所以不是主因"
+    #    这个反证没有评估对象——没有需要解释的退化。不适用，不参与评分。──
+    if not has_ranking_degradation(metrics):
+        return EvidenceItem(
+            evidence_id=str(uuid.uuid4()),
+            evidence_type=EvidenceType.I,
+            method_code="permutation_importance_check",
+            executor_version="V2",
+            normalized_score=None,
+            direction=EvidenceDirection.NEUTRAL,
+            applicable=False,
+            availability_status=AvailabilityStatus.NOT_APPLICABLE,
+            confidence_level=ConfidenceLevel.LOW,
+            evidence_detail_json={
+                "message": (
+                    "无显著排序性能退化（AUC/KS/PR_AUC/BAD_RECALL 下降 < 0.02），"
+                    "重要性反证没有评估对象，本证据不参与评分"
+                ),
+            },
+        )
 
     # ── 前置检查 ──
     if not feature_importance:
@@ -61,7 +86,7 @@ async def permutation_importance_check(
             evidence_id=str(uuid.uuid4()),
             evidence_type=EvidenceType.I,
             method_code="permutation_importance_check",
-            executor_version="V1",
+            executor_version="V2",
             normalized_score=0.0,
             direction=EvidenceDirection.NEUTRAL,
             applicable=False,
@@ -91,7 +116,7 @@ async def permutation_importance_check(
             evidence_id=str(uuid.uuid4()),
             evidence_type=EvidenceType.I,
             method_code="permutation_importance_check",
-            executor_version="V1",
+            executor_version="V2",
             normalized_score=0.5,
             direction=EvidenceDirection.NEUTRAL,
             applicable=True,
@@ -109,7 +134,7 @@ async def permutation_importance_check(
             evidence_id=str(uuid.uuid4()),
             evidence_type=EvidenceType.I,
             method_code="permutation_importance_check",
-            executor_version="V1",
+            executor_version="V2",
             normalized_score=0.05,
             direction=EvidenceDirection.AGAINST,
             applicable=True,
@@ -130,7 +155,7 @@ async def permutation_importance_check(
             evidence_id=str(uuid.uuid4()),
             evidence_type=EvidenceType.I,
             method_code="permutation_importance_check",
-            executor_version="V1",
+            executor_version="V2",
             normalized_score=0.5,
             direction=EvidenceDirection.NEUTRAL,
             applicable=True,
@@ -206,7 +231,7 @@ async def permutation_importance_check(
         evidence_id=str(uuid.uuid4()),
         evidence_type=EvidenceType.I,
         method_code="permutation_importance_check",
-        executor_version="V1",
+        executor_version="V2",
         normalized_score=round(normalized, 4),
         direction=direction,
         applicable=True,

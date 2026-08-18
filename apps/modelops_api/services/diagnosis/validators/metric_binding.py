@@ -55,3 +55,50 @@ def degradation_from_delta(metric_code: str, delta: float) -> float | None:
     if code in _DEVIATION_IS_BAD:
         return abs(value)
     return None
+
+
+_RANKING_METRICS = {"AUC", "KS", "PR_AUC", "BAD_RECALL"}
+_DEGRADATION_SIGNIFICANCE = 0.02  # 与 L1 WARNING 阈值一致
+
+
+def has_ranking_degradation(metrics: list[dict] | None) -> bool:
+    """是否存在需要解释的排序性能退化（≥0.02 的 AUC/KS/PR_AUC/BAD_RECALL 下降）。
+
+    没有退化时"修复能否恢复性能 / 漂移特征是否重要"没有评估对象——
+    反事实与重要性证据不构成对任何候选的 SUPPORT 或 AGAINST。
+    """
+    for m in metrics or []:
+        code = str(m.get("metric_code", "")).upper()
+        if code not in _RANKING_METRICS:
+            continue
+        if m.get("degraded"):
+            return True
+        try:
+            delta = float(m.get("delta"))
+        except (TypeError, ValueError):
+            continue
+        degradation = degradation_from_delta(code, delta)
+        if degradation is not None and degradation >= _DEGRADATION_SIGNIFICANCE:
+            return True
+    return False
+
+
+def resolve_metric_from_supporting_alerts(
+    alert_code: str,
+    supporting_alert_codes: list[str] | None = None,
+) -> str | None:
+    """绑定候选告警集里唯一可绑定的性能指标。
+
+    候选主告警（如 HIGH_FEATURE_PSI）本身绑定不到性能指标时，
+    从同候选的 supporting alert codes（AUC_DROP/KS_DROP/...）中找
+    第一个可绑定的排序性能告警——漂移候选与性能告警同现时，
+    时序/相关性验证以该性能指标为退化参照，不做 AUC/KS 混用。
+    """
+    bound = resolve_alert_metric_code(alert_code)
+    if bound is not None:
+        return bound
+    for code in supporting_alert_codes or []:
+        bound = resolve_alert_metric_code(code)
+        if bound is not None:
+            return bound
+    return None

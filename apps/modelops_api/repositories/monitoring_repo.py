@@ -85,19 +85,46 @@ class MonitoringRepo:
 
     async def get_run(self, monitoring_run_id: str) -> dict | None:
         result = await self.session.execute(
-            text("SELECT * FROM monitoring.monitoring_runs WHERE monitoring_run_id = :id"),
+            text("""
+                SELECT
+                    mr.*,
+                    lr.lifecycle_run_id,
+                    lr.current_phase AS lifecycle_phase
+                FROM monitoring.monitoring_runs mr
+                LEFT JOIN LATERAL (
+                    SELECT lifecycle_run_id, current_phase
+                    FROM workflow.model_lifecycle_runs
+                    WHERE state_json ->> 'monitoring_run_id' = mr.monitoring_run_id::text
+                    ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+                    LIMIT 1
+                ) lr ON TRUE
+                WHERE mr.monitoring_run_id = :id
+            """),
             {"id": monitoring_run_id},
         )
         row = result.mappings().first()
         return dict(row) if row else None
 
     async def list_runs(self, model_id: str | None = None, limit: int = 20) -> list[dict]:
-        sql = "SELECT * FROM monitoring.monitoring_runs"
+        sql = """
+            SELECT
+                mr.*,
+                lr.lifecycle_run_id,
+                lr.current_phase AS lifecycle_phase
+            FROM monitoring.monitoring_runs mr
+            LEFT JOIN LATERAL (
+                SELECT lifecycle_run_id, current_phase
+                FROM workflow.model_lifecycle_runs
+                WHERE state_json ->> 'monitoring_run_id' = mr.monitoring_run_id::text
+                ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+                LIMIT 1
+            ) lr ON TRUE
+        """
         params: dict = {}
         if model_id:
-            sql += " WHERE model_id = :mid"
+            sql += " WHERE mr.model_id = :mid"
             params["mid"] = model_id
-        sql += " ORDER BY started_at DESC LIMIT :lim"
+        sql += " ORDER BY mr.started_at DESC LIMIT :lim"
         params["lim"] = limit
         result = await self.session.execute(text(sql), params)
         return [dict(row) for row in result.mappings()]

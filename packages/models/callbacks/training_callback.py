@@ -29,6 +29,10 @@ class TrainingCallback(ContractModel):
     # 任务三预标记字段
     data_reproducible: bool = False
     candidate_frozen_before_oot: bool = False
+    # 冻结身份校验和（Worker 冻结候选时写回；晋升防换包）
+    frozen_identity_checksum: str | None = None
+    # 训练消费回执（Worker 真实消费证据；严格 A7 链路要求 SUCCEEDED 非空）
+    consumption_receipt: dict | None = None
 
     @model_validator(mode="after")
     def validate_technical_result(self) -> "TrainingCallback":

@@ -1,7 +1,12 @@
-rule_version: qualification-rules-v1
-min_recovery_rate: 0.60
+rule_version: qualification-rules-v2
+# 恢复率硬门槛（对齐严格 A7 垂直链路定稿口径）：
+# 恢复量必须至少覆盖退化量的 90%（真实 Challenger 012/027/052/053 均远超此值）。
+min_recovery_rate: 0.90
 max_score_psi: 0.20
 max_train_valid_gap: 0.03
 required_oot_window_id: W4
 require_healthy_range: true
 require_same_sample_bootstrap: true
+# 特征级 PSI 阈值：STABILITY 门参与判定（服务端配置，API 不可提交）
+feature_psi_threshold: 0.25
+threshold_status: PENDING_EMPIRICAL_CALIBRATION

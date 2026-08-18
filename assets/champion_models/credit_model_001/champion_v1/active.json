@@ -1,0 +1,8 @@
+{
+  "training_run_id": "sentinel-live-001",
+  "artifact_path": "sentinel/sentinel-live-001/sentinel.joblib",
+  "sentinel_version": "sentinel_lgbm_v1",
+  "feature_schema_version": "sentinel-features-v1",
+  "feature_schema_hash": "03c95eb2a3dded9746e8e476ba6e356467e3e8630c40a20bc102e493536191ef",
+  "published_at": "2026-08-13 00:45:44.503778"
+}

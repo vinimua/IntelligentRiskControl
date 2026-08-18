@@ -4,8 +4,12 @@
 
 export type MonitoringRun = {
   monitoring_run_id: string;
+  lifecycle_run_id?: string | null;
+  lifecycle_phase?: string | null;
   model_id?: string;
   champion_version?: string;
+  baseline_window_id?: string | null;
+  current_window_id?: string | null;
   overall_status?: string;
   alert_count?: number;
   max_alert_severity?: string | null;
@@ -135,20 +139,46 @@ export type EnrichedMetricsResponse = {
 
 /* ── B1 持续性判定 ── */
 
+export type TriggerSource = "B1_PERSISTENCE" | "WP08_SENTINEL";
+
+export type SentinelStatus =
+  | "NOT_PUBLISHED"
+  | "SCHEMA_MISMATCH"
+  | "ACTIVE"
+  | "INFERENCE_FAILED"
+  | "NO_FEATURE_ROWS";
+
+export type SentinelEvidence = {
+  sentinel_status: SentinelStatus;
+  triggered: boolean;
+  anomaly_probability: number | null;
+  alert_threshold: number | null;
+  monitor_window_id: string | null;
+  sentinel_version: string | null;
+  top_signals: string[];
+};
+
 export type PersistenceJudgment = {
   trigger_diagnosis: boolean;
   decay_degree: "SHORT_TERM_7D" | "SUSTAINED_30D" | "SEVERE" | "NONE";
+  trigger_sources?: TriggerSource[];
+  sentinel_evidence?: SentinelEvidence | null;
   requires_manual_review: boolean;
   status_7d: "NORMAL" | "OBSERVING" | "TRIGGERED";
   status_30d: "NORMAL" | "OBSERVING" | "TRIGGERED";
   persistence_evidence: Array<{
-    metric_code: string;
-    window_count_7d: number;
-    window_count_30d: number;
-    max_severity: string | null;
-    consecutive_count: number;
+    metric_code?: string;
+    source?: string;
+    window_count_7d?: number;
+    window_count_30d?: number;
+    max_severity?: string | null;
+    consecutive_count?: number;
     count_7d?: Record<string, number>;
     count_30d?: Record<string, number>;
+    anomaly_probability?: number;
+    alert_threshold?: number;
+    monitor_window_id?: string;
+    top_signals?: string[];
   }>;
   dimension_alert_summary: Record<string, {
     total?: number;

@@ -80,6 +80,7 @@ METRICS = [
     {"entity_code": "MISSING_RATE", "name": "缺失率", "category": "data_quality"},
     {"entity_code": "SCHEMA_CONSISTENCY", "name": "模式一致性", "category": "data_quality"},
     {"entity_code": "SAMPLE_SIZE", "name": "样本量", "category": "data_quality"},
+    {"entity_code": "OUTLIER_RATE", "name": "离群率异常增量", "category": "data_quality"},
     # 标签
     {"entity_code": "BAD_RATE", "name": "坏样本率", "category": "label"},
     {"entity_code": "PREDICTION_MEAN", "name": "预测均值", "category": "distribution"},
@@ -109,16 +110,16 @@ ALERTS = [
 # ═══════════════════════════════════════════════════════════
 
 # 5.1 Feature → MONITORED_BY → Metric（无概率权重，纯配置）
-#    所有特征通过所有指标监控（全连接）
+#    只连接真实逐特征计算的指标。SCORE_PSI/SAMPLE_SIZE/SCHEMA_CONSISTENCY 等
+#    是模型级或数据集级指标，不能全连接到每个特征（曾产生 170 条过度连接）。
+#    OUTLIER_RATE 只对连续特征计算（类别特征恒为 0），不连类别特征。
+PER_FEATURE_METRICS = ("FEATURE_PSI", "MISSING_RATE", "OUTLIER_RATE")
 MONITORED_BY_RELATIONS = []
 for f in FEATURES:
-    for m in METRICS:
-        if m["entity_code"] in ("AUC", "KS", "PR_AUC", "BAD_RECALL",
-                                 "BRIER", "ECE", "BAD_RATE",
-                                 "PERFORMANCE_DROP_MAX", "MONITOR_STATUS",
-                                 "PREDICTION_MEAN"):
-            continue  # 这些是模型级指标，不对应具体特征
-        MONITORED_BY_RELATIONS.append((f["entity_code"], m["entity_code"]))
+    for m in PER_FEATURE_METRICS:
+        if m == "OUTLIER_RATE" and f["data_type"] != "NUMERIC":
+            continue  # 离群率只对 NUMERIC 特征有监控意义
+        MONITORED_BY_RELATIONS.append((f["entity_code"], m))
 
 # 5.2 Metric → TRIGGERS → Alert（确定性规则，weight=1.0）
 TRIGGERS_RELATIONS = [
@@ -204,6 +205,22 @@ async def seed() -> int:
                     r.enabled = true
             """, feat_code=feat_code, metric_code=metric_code, rkey=rkey)
             rel_count += 1
+
+        # ── ④b 退役历史全连接边（治理约束：关系退役用 enabled=false，不物理删除）──
+        # 数据集/模型级指标不应连到单个特征
+        await session.run("""
+            MATCH (:Feature)-[r:MONITORED_BY]->(m:Metric)
+            WHERE NOT m.entity_code IN $per_feature
+            SET r.enabled = false,
+                r.deprecated_reason = 'DATASET_LEVEL_METRIC_NOT_PER_FEATURE'
+        """, per_feature=list(PER_FEATURE_METRICS))
+        # 离群率只对连续特征计算，类别特征的 OUTLIER_RATE 边退役
+        await session.run("""
+            MATCH (f:Feature)-[r:MONITORED_BY]->(m:Metric {entity_code: 'OUTLIER_RATE'})
+            WHERE f.data_type <> 'NUMERIC'
+            SET r.enabled = false,
+                r.deprecated_reason = 'OUTLIER_RATE_NOT_APPLICABLE_FOR_CATEGORICAL'
+        """)
 
         # ── ⑤ TRIGGERS: Metric → Alert ──
         for metric_code, alert_code in TRIGGERS_RELATIONS:

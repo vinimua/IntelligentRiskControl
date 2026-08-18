@@ -185,7 +185,7 @@ class DeploymentSafetyService:
         from sqlalchemy import text
 
         now = datetime.now(timezone.utc)
-        deployment_id = deployment["deployment_id"]
+        deployment_id = str(deployment["deployment_id"])
         model_id = deployment.get("model_id")
         champion = deployment.get("champion_version", "")
         current_stage = deployment.get("current_stage", "")
@@ -299,7 +299,7 @@ class DeploymentSafetyService:
         from sqlalchemy import text
 
         now = datetime.now(timezone.utc)
-        deployment_id = deployment["deployment_id"]
+        deployment_id = str(deployment["deployment_id"])
         model_id = deployment.get("model_id")
         champion = deployment.get("champion_version", "")
         challenger = deployment.get("candidate_version", "")

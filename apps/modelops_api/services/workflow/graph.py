@@ -39,12 +39,18 @@ from packages.models.workflow.lifecycle_state import ModelLifecycleState
 
 logger = structlog.get_logger(__name__)
 
-# ── Mock 行为 ──
-MOCK_CHALLENGER_QUALIFIED: bool = False
-MOCK_DEPLOYMENT_DECISION: str = "PROMOTE"
 # route_after_failure_analysis 优先从 iteration.yaml 读取 max_iteration_rounds；
 # 此常量仅作为配置加载失败时的 fallback 默认值。
-MAX_BUSINESS_ROUNDS: int = 3
+# 最大业务轮次统一为 2（A7 定稿）
+MAX_BUSINESS_ROUNDS: int = 2
+
+# B1 持续性等级 → KG 结构化过滤数值（NONE=0 / SHORT_TERM_7D=1 / SUSTAINED_30D=2 / SEVERE=3）
+_DECAY_LEVELS: dict[str, int] = {
+    "NONE": 0,
+    "SHORT_TERM_7D": 1,
+    "SUSTAINED_30D": 2,
+    "SEVERE": 3,
+}
 
 
 def _g(state, key, default=None):
@@ -206,6 +212,7 @@ def _route_after_action(
     "CalibrationPlanNode",
     "ThresholdPlanNode",
     "FeatureReconstructionNode",
+    "FeatureSelectionNode",
     "TrainingPlanNode",
     "ManualReviewNode",
 ]:
@@ -229,10 +236,19 @@ def _route_after_action(
     if action == AgentDecisionAction.MANUAL_REVIEW.value:
         return "ManualReviewNode"
     if need is True or action == AgentDecisionAction.MODEL_ITERATION.value:
-        tier = _g(state, "strategy_tier") or "full"
-        # "full" / "light": 走特征重构；"minimal" / "tune_only": 跳过
-        if tier in {"full", "light"} or _has_feature_level_issues(state):
+        # A7 §7: 路由由 TrainingMode 驱动，禁止按 strategy_tier 猜测训练模式
+        training_mode = str(
+            _g(state, "training_mode") or "FULL_RETRAIN"
+        ).upper()
+        if training_mode == "FEATURE_SELECTION":
+            # 特征筛选独立执行器：生成冻结特征清单后重训
+            return "FeatureSelectionNode"
+        if training_mode == "FEATURE_RECONSTRUCTION" or (
+            training_mode in {"FULL_RETRAIN", "PARAMETER_TUNING"}
+            and _has_feature_level_issues(state)
+        ):
             return "FeatureReconstructionNode"
+        # INCREMENTAL_TRAIN：必须保持 Champion 特征契约，不走重构
         return "TrainingPlanNode"
     if need is False:
         return "ObservationCloseNode"
@@ -248,13 +264,24 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
 
     产出：17 个汇总指标 + 诊断时间线 + per-feature 漂移/质量 + 检测器信号 + Sentinel 特征向量。
     """
-    from ...services.monitoring.window_loader import load_window_with_predictions
+    from ...services.monitoring.window_loader import (
+        load_window_with_predictions,
+        resolve_monitoring_window_ids,
+    )
 
     model_id = _g(state, "model_id", "credit_model_001")
-    w0_df = load_window_with_predictions("W0", model_id)
-    w1_df = load_window_with_predictions("W1", model_id)
-    w2_df = load_window_with_predictions("W2", model_id)
-    w3_df = load_window_with_predictions("W3", model_id)
+    champion_version = _g(state, "champion_version", "champion_v1")
+    baseline_window_id, current_window_ids = resolve_monitoring_window_ids(
+        model_id, champion_version,
+    )
+    baseline_df = load_window_with_predictions(baseline_window_id, model_id)
+    current_dfs = [
+        load_window_with_predictions(window_id, model_id)
+        for window_id in current_window_ids
+    ]
+    w1_df = current_dfs[0]
+    w2_df = current_dfs[1] if len(current_dfs) > 1 else current_dfs[0]
+    w3_df = current_dfs[-1]
 
     try:
         from ...database import async_session
@@ -269,11 +296,14 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
 
             result = await service.run_full_pipeline(
                 model_id=_g(state, "model_id"),
-                champion_version=_g(state, "champion_version"),
-                w0_df=w0_df,
+                champion_version=champion_version,
+                w0_df=baseline_df,
                 w1_df=w1_df,
                 w2_df=w2_df,
                 w3_df=w3_df,
+                baseline_window_id=baseline_window_id,
+                current_window_id=current_window_ids[-1],
+                current_window_dfs=current_dfs,
             )
 
             logger.info(
@@ -318,6 +348,37 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
 
             should_enter_diagnosis = trigger_diagnosis or requires_manual_review
 
+            # A7 §8: 当前生命周期已处于活动状态 → 只记录 trigger_cause
+            # （真实信号），不创建新 run。独立监测事件入口（routers/monitoring.py
+            # POST /runs）由 TriggerService 创建生命周期。
+            # 异常触发读取真实 Sentinel 信号，不用告警严重度代替。
+            max_sev = (
+                result.max_alert_severity.value
+                if result.max_alert_severity else None
+            )
+            sentinel_triggered = False
+            try:
+                _pj = persistence_judgment or {}
+                sentinel_triggered = bool(
+                    (_pj.get("sentinel_evidence") or {}).get("triggered")
+                )
+            except Exception:
+                pass
+            trigger_cause = None
+            if sentinel_triggered:
+                trigger_cause = "SENTINEL_ANOMALY"
+            elif (persistence_judgment or {}).get("decay_degree") == "SEVERE":
+                trigger_cause = "SEVERE_PERSISTENCE"
+            elif max_sev in {"HIGH", "CRITICAL"}:
+                trigger_cause = "THRESHOLD_BREACH"
+            if trigger_cause:
+                logger.info(
+                    "trigger_cause_recorded",
+                    monitoring_run_id=result.monitoring_run_id,
+                    trigger_cause=trigger_cause,
+                    sentinel_triggered=sentinel_triggered,
+                )
+
             return {
                 "monitoring_run_id": result.monitoring_run_id,
                 "has_alerts": result.has_alerts,
@@ -332,6 +393,7 @@ async def monitoring_node(state: ModelLifecycleState) -> dict:
                 "status_30d": status_30d,
                 "diagnosis_status": diagnosis_status,
                 "persistence_judgment": persistence_judgment,
+                "trigger_cause": trigger_cause,
                 "current_phase": (
                     LifecyclePhase.MONITORING_COMPLETED.value
                     if result.has_alerts or should_enter_diagnosis
@@ -524,6 +586,13 @@ async def diagnosis_node(state: ModelLifecycleState) -> dict:
                 ),
                 "need_iteration": result.need_iteration,
                 "requires_manual_review": result.requires_manual_review or _g(state, "requires_manual_review", False),
+                # A7 §4/§5: L1 结构化上下文由诊断输出持久化写入 State
+                "impact_scope": getattr(result, "impact_scope", None)
+                or _g(state, "impact_scope"),
+                "change_pattern": getattr(result, "change_pattern", None)
+                or _g(state, "change_pattern"),
+                "segment_evidence": getattr(result, "segment_evidence", None)
+                or _g(state, "segment_evidence"),
                 "drift_features": drift_features,
                 "high_missing_features": high_missing_features,
                 "feature_importance": feature_importance,
@@ -532,12 +601,16 @@ async def diagnosis_node(state: ModelLifecycleState) -> dict:
             }
             if diag_warnings:
                 return_dict["warnings"] = diag_warnings
-            diagnosis_status = (
-                "MANUAL_REVIEW"
-                if return_dict["requires_manual_review"]
-                or return_dict["recommended_action"] == "MANUAL_REVIEW"
-                else "COMPLETED"
-            )
+            # 优先保留服务返回的 diagnosis_status（如 INSUFFICIENT_DATA），
+            # 只有服务正常完成时才按人工复核重新计算。
+            diagnosis_status = getattr(result, "diagnosis_status", None) or "COMPLETED"
+            if diagnosis_status == "COMPLETED":
+                diagnosis_status = (
+                    "MANUAL_REVIEW"
+                    if return_dict["requires_manual_review"]
+                    or return_dict["recommended_action"] == "MANUAL_REVIEW"
+                    else "COMPLETED"
+                )
             await mon_repo.update_diagnosis_status(monitoring_run_id, diagnosis_status)
             return_dict["diagnosis_status"] = diagnosis_status
             await session.commit()
@@ -721,15 +794,32 @@ async def iteration_decision_node(state: ModelLifecycleState) -> dict:
                     "warnings": ["诊断节点未返回根因维度，无法决策——转人工复核"],
                 }
 
-            # 从 DB 加载诊断的真实 evidence_types
+            # 从 DB 加载诊断的真实 evidence_types（D/R/C/T/I 字母）
+            # 只统计 applicable=True 的证据：不适用的验证器不构成证据链
+            #（禁止 fail-open 用占位集合凑数）。
             evidence_types: list[str] = []
+            evidence_coverage: float = 0.0
             try:
                 from ...repositories.diagnosis_repo import DiagnosisRepo
                 diag_repo = DiagnosisRepo(session)
                 evidence_records = await diag_repo.get_evidence_for_run(diagnosis_run_id)
-                # 去重提取 method_code 作为 evidence_type
-                evidence_types = list({e.get("method_code", "") for e in evidence_records
-                                       if e.get("method_code")})
+                primary_records = [
+                    e for e in evidence_records
+                    if str(e.get("hypothesis_code") or "").upper()
+                    == str(primary_code).upper()
+                ]
+                applicable_records = [
+                    e for e in primary_records if e.get("applicable")
+                ]
+                evidence_types = sorted({
+                    str(e.get("evidence_type", ""))
+                    for e in applicable_records
+                    if e.get("evidence_type")
+                })
+                if primary_records:
+                    evidence_coverage = round(
+                        len(applicable_records) / len(primary_records), 2
+                    )
             except Exception:
                 logger.warning("iteration_decision_evidence_types_load_failed", exc_info=True)
 
@@ -748,10 +838,12 @@ async def iteration_decision_node(state: ModelLifecycleState) -> dict:
                             "current_value": m.get("current_value"),
                             "healthy_lower_bound": m.get("healthy_lower_bound"),
                             "healthy_upper_bound": m.get("healthy_upper_bound"),
-                            "degraded": m.get("degraded", False),
+                            # monitoring_metrics 的触发列是 triggered（阈值评估
+                            # 后 update_metric_triggered 写回），不是 degraded
+                            "degraded": bool(m.get("triggered", False)),
                         }
                         for m in mon_metrics
-                        if m.get("degraded")
+                        if m.get("triggered")
                     ]
                 except Exception:
                     logger.warning("iteration_decision_metrics_load_failed", exc_info=True)
@@ -760,22 +852,59 @@ async def iteration_decision_node(state: ModelLifecycleState) -> dict:
             from ...services.iteration.config_loader import load_iteration_config
             rule_version = load_iteration_config().iteration.rule_version
 
+            # Champion 算法家族（来自 assets bundle manifest；增量策略选择依据）
+            champion_family: str | None = None
+            try:
+                from pathlib import Path as _Path
+                manifest_path = (
+                    _Path(__file__).resolve().parents[4]
+                    / "assets" / "champion_models"
+                    / (_g(state, "model_id") or "")
+                    / (_g(state, "champion_version") or "champion_v1")
+                    / "training_manifest.json"
+                )
+                if manifest_path.is_file():
+                    import json as _json
+                    champion_family = _json.loads(
+                        manifest_path.read_text(encoding="utf-8")
+                    ).get("algorithm_family")
+            except Exception:
+                logger.warning("iteration_decision_algorithm_family_load_failed", exc_info=True)
+
             decision_input = DecisionInput(
                 diagnosis_run_id=diagnosis_run_id,
                 lifecycle_run_id=lifecycle_run_id,
                 model_id=_g(state, "model_id"),
                 champion_version=_g(state, "champion_version"),
+                algorithm_family=champion_family,
                 root_causes=[{
                     "root_cause_code": primary_code,
                     "dimension": primary_dimension,
                     "score": primary_score or 0.0,
-                    "evidence_coverage": 0.8,
-                    "evidence_types": evidence_types or ["D", "I", "R", "T"],
+                    "evidence_coverage": evidence_coverage,
+                    "evidence_types": evidence_types,
                 }],
                 degraded_metrics=degraded_metrics,
                 business_objective_changed=_g(state, "business_objective_changed") or False,
                 data_repair_completed=_g(state, "data_repair_completed") or False,
                 pipeline_repair_completed=_g(state, "pipeline_repair_completed") or False,
+                # A7 §4/§5: L1 结构化上下文（KG 不能替 L1 选择）
+                monitoring_run_id=_g(state, "monitoring_run_id") or None,
+                decay_degree=_g(state, "decay_degree") or None,
+                impact_scope=_g(state, "impact_scope") or None,
+                change_pattern=_g(state, "change_pattern") or None,
+                business_round=int(_g(state, "business_round") or 1),
+                manual_approval=bool(_g(state, "manual_approval") or False),
+                # A7 §4: 冻结合格客群定义（segment_weighted_retrain 证据）
+                segment_evidence=_g(state, "segment_evidence") or None,
+                # W3 失败归因证据（feature_selection_retrain 的 L1 门槛）
+                failure_report_id=_g(state, "failure_report_id") or None,
+                unstable_feature_codes=[
+                    str(c).strip()
+                    for c in (_g(state, "unstable_feature_codes") or "").split(",")
+                    if str(c).strip()
+                ],
+                feature_evidence_source=_g(state, "feature_evidence_source") or None,
                 rule_version=rule_version,
             )
 
@@ -790,13 +919,60 @@ async def iteration_decision_node(state: ModelLifecycleState) -> dict:
             kg_driver = await get_neo4j_driver()
             knowledge = KnowledgeService(kg_driver)
 
-            # KG 查询时传入 severity + algorithm，边上的过滤条件自动筛选
-            kg_algorithm = _g(state, "algorithm") or None
+            # KG 查询时传入 severity + algorithm + 结构化条件，
+            # 边上的过滤条件自动筛选（持续性等级 / 业务轮次 / 证据上下文）
+            raw_algorithm_family = champion_family or _g(state, "algorithm") or None
+            kg_algorithm = RepairDecisionService._normalize_algorithm_family(
+                raw_algorithm_family
+            ) or None
+            kg_decay_degree = _g(state, "decay_degree")
+            kg_decay_level = _DECAY_LEVELS.get(kg_decay_degree, None)
+            kg_business_round = int(_g(state, "business_round") or 0) or None
+            # A7 §6.1: 运行时证据上下文（逐边 required_context 校验）。
+            # 每个证据码都有真实来源，无法可靠判定的不授予，宁可漏召也不伪造：
+            # - sustained_30d: B1 持续性判定
+            # - incremental_algorithm_supported: champion 算法族
+            # - champion_artifact_available: 监测已完成 = Champion 预测已真实加载
+            # - schema_compatible: Sentinel schema hash 校验通过（非 SCHEMA_MISMATCH）
+            # - manual_approval: 真实 Review 记录 APPROVED（TrainingPlanNode 写入）
+            # - unstable_feature_subset_confirmed / feature_selection_evidence_available:
+            #   第二轮 + W3 失败归因报告真实存在
+            available_context_codes: list[str] = []
+            if kg_decay_degree == "SUSTAINED_30D":
+                available_context_codes.append("sustained_30d")
+            if RepairDecisionService._supports_incremental(raw_algorithm_family):
+                available_context_codes.append("incremental_algorithm_supported")
+            if _g(state, "monitoring_run_id"):
+                available_context_codes.append("champion_artifact_available")
+            judgment = _g(state, "persistence_judgment") or {}
+            sentinel_evidence = judgment.get("sentinel_evidence") or {}
+            # ACTIVE = Sentinel schema hash 校验通过（真实监控信号）
+            if sentinel_evidence.get("sentinel_status") == "ACTIVE":
+                available_context_codes.append("schema_compatible")
+            if bool(_g(state, "manual_approval") or False):
+                available_context_codes.append("manual_approval")
+            # 第二轮特征证据：来自真实 W3 失败归因（FailureAttributionService），
+            # 不是"存在 ID"占位语义
+            if int(_g(state, "business_round") or 1) >= 2:
+                if bool(_g(state, "unstable_feature_subset_confirmed") or False):
+                    available_context_codes.append(
+                        "unstable_feature_subset_confirmed"
+                    )
+                if (
+                    _g(state, "failure_report_id")
+                    and _g(state, "failed_gate_codes")
+                ):
+                    available_context_codes.append(
+                        "feature_selection_evidence_available"
+                    )
             iteration_ctx = await knowledge.query_iteration_context(
                 root_cause_code=primary_code,
                 diagnosis_run_id=diagnosis_run_id,
                 severity=primary_score,
                 algorithm=kg_algorithm,
+                decay_level=kg_decay_level,
+                business_round=kg_business_round,
+                available_context_codes=available_context_codes,
             )
 
             # 优先用 KG 决策，KG 降级时回退 YAML
@@ -813,18 +989,24 @@ async def iteration_decision_node(state: ModelLifecycleState) -> dict:
             await repo.save_risk(risk)
             await session.commit()
 
-            # 从 KG Strategy 提取 algorithm + strategy_tier，供下游路由和参数决策
+            # 从正式合同字段提取 algorithm / strategy_tier / training_mode：
+            # primary_training_mode 是唯一训练模式来源，禁止从 strategy_tier 猜测
+            first_selection = proposal.strategies[0] if proposal.strategies else None
             algorithm = (
-                proposal.strategies[0].parameters.get("algorithm")
-                if proposal.strategies else None
+                first_selection.parameters.get("algorithm")
+                if first_selection else None
             )
             strategy_tier = (
-                proposal.strategies[0].parameters.get("strategy_tier", "full")
-                if proposal.strategies else "full"
+                first_selection.parameters.get("strategy_tier", "full")
+                if first_selection else "full"
+            )
+            training_mode = (
+                first_selection.primary_training_mode
+                if first_selection else "full"
             )
             iteration_warnings: list[str] = []
-            if strategy_tier == "full" and proposal.strategies:
-                strategy_tier_from_kg = proposal.strategies[0].parameters.get("strategy_tier")
+            if strategy_tier == "full" and first_selection is not None:
+                strategy_tier_from_kg = first_selection.parameters.get("strategy_tier")
                 if not strategy_tier_from_kg:
                     msg = "KG Strategy 边未配置 strategy_tier，默认使用 full（全量重构+调参+重训）—— 请在 Neo4j 配置该属性以精确控制迭代策略"
                     logger.warning("strategy_tier_defaulted_to_full", msg=msg)
@@ -845,7 +1027,7 @@ async def iteration_decision_node(state: ModelLifecycleState) -> dict:
                 ),
                 "algorithm": algorithm,
                 "strategy_tier": strategy_tier,
-                "training_mode": "incremental" if strategy_tier == "incremental" else "full",
+                "training_mode": training_mode,
                 "current_phase": (
                     LifecyclePhase.MANUAL_REVIEW.value
                     if proposal.requires_manual_review
@@ -937,11 +1119,25 @@ async def observation_close_node(state: ModelLifecycleState) -> dict:
 
 
 async def repair_plan_node(state: ModelLifecycleState) -> dict:
-    """P3 数据/管道修复节点 — 调用 RepairExecutor 生成结构化修复计划。"""
+    """P3 A3/A4 — 派发真实修复 Worker，等待同窗回放与资格结果。
+
+    派发成功后标记事件待修复，然后 interrupt 等待回调；回调后由
+    qualify_repair（action_execution_service）做真实回放资格判定——
+    修复是否真的修好了由证据回答，不允许"派发即成功"。
+    """
     from .executors import create_repair_plan, dispatch_external_execution
+    from ...config import settings
+
+    # A3/A4 修复对象：诊断产出的漂移特征（真实证据，不靠调用方声明）
+    state_dict = _state_dict(state)
+    if not state_dict.get("affected_features"):
+        drift_features = _g(state, "drift_features") or []
+        state_dict["affected_features"] = [
+            str(f.get("feature_name")) for f in drift_features if f.get("feature_name")
+        ]
 
     try:
-        plan = create_repair_plan(_state_dict(state))
+        plan = create_repair_plan(state_dict)
     except Exception as e:
         logger.error("repair_plan_creation_failed", exc_info=True)
         return {
@@ -958,6 +1154,22 @@ async def repair_plan_node(state: ModelLifecycleState) -> dict:
         dispatch = dispatch_external_execution("REPAIR", plan)
         if dispatch.get("dispatched"):
             plan["status"] = "DISPATCHED"
+        elif settings.workflow_use_celery:
+            try:
+                from workers.app import app as celery_app
+
+                task = celery_app.send_task(
+                    "workers.executor_tasks.repair_and_replay", args=[plan]
+                )
+                dispatch = {
+                    "dispatched": True,
+                    "dispatch_mode": "CELERY",
+                    "external_task_id": getattr(task, "id", None),
+                }
+                plan["status"] = "DISPATCHED"
+            except Exception as celery_exc:
+                dispatch = {"dispatch_mode": "CELERY", "error": str(celery_exc)}
+                logger.warning("repair_celery_dispatch_failed", exc_info=True)
     except Exception as exc:
         dispatch = {
             "dispatch_mode": "EXTERNAL_HTTP",
@@ -975,16 +1187,89 @@ async def repair_plan_node(state: ModelLifecycleState) -> dict:
             "current_phase": LifecyclePhase.FAILED.value,
             "last_error": {
                 "reason": "repair_dispatch_failed",
-                "message": "修复计划派发失败，外部执行器不可用",
+                "message": "修复计划派发失败，外部执行器和 Celery 均不可用",
                 "at": _now_iso(),
             },
         }
 
+    # 派发成功：标记诊断事件待修复（外部团队可见）
+    await _mark_event_pending_repair(state)
+
+    # interrupt 等待 Worker 回调（fail-closed：无 status 不得默认成功）
+    resume_data = interrupt("waiting_repair_and_replay_callback")
+    if not isinstance(resume_data, dict) or not resume_data.get("status"):
+        return {
+            "repair_plan_id": plan["repair_plan_id"],
+            "repair_qualified": False,
+            "iteration_exit_reason": "REPAIR_CALLBACK_CONTRACT_INVALID",
+            "current_phase": LifecyclePhase.FAILED.value,
+        }
+    callback_status = str(resume_data["status"]).upper()
+    execution_result = {
+        "status": callback_status,
+        "artifact_uri": resume_data.get("artifact_uri"),
+        "artifact_checksum": resume_data.get("artifact_checksum"),
+        "metrics": resume_data.get("metrics") or {},
+        "consumption_receipt": resume_data.get("consumption_receipt") or {},
+    }
+    if callback_status != "SUCCEEDED":
+        return {
+            "repair_plan_id": plan["repair_plan_id"],
+            "repair_qualified": False,
+            "repair_execution_result": execution_result,
+            "iteration_exit_reason": "REPAIR_WORKER_FAILED",
+            "current_phase": LifecyclePhase.FAILED.value,
+            "last_error": {
+                "reason": "repair_worker_failed",
+                "message": resume_data.get("error_message") or "修复 Worker 执行失败",
+                "at": _now_iso(),
+            },
+        }
+    from ...services.iteration.action_execution_service import qualify_repair
+
+    qualified, reasons = qualify_repair(execution_result)
     return {
         "repair_plan_id": plan["repair_plan_id"],
-        "iteration_exit_reason": plan["action"],
-        "current_phase": LifecyclePhase.ITERATING.value,
+        "repair_artifact_uri": execution_result["artifact_uri"],
+        "repair_artifact_checksum": execution_result["artifact_checksum"],
+        "repair_execution_result": execution_result,
+        "repair_qualified": qualified,
+        "validation_metrics": execution_result["metrics"],
+        "iteration_exit_reason": None if qualified else "REPAIR_REPLAY_QUALIFICATION_FAILED",
+        "current_phase": (
+            LifecyclePhase.QUALIFICATION_COMPLETED.value
+            if qualified
+            else LifecyclePhase.FAILED.value
+        ),
+        "last_error": (
+            None
+            if qualified
+            else {
+                "reason": "repair_replay_qualification_failed",
+                "message": ",".join(reasons),
+                "at": _now_iso(),
+            }
+        ),
     }
+
+
+async def _mark_event_pending_repair(state: ModelLifecycleState) -> None:
+    """标记诊断事件为待修复（外部数据/管道修复期间的事件状态）。"""
+    event_id = _g(state, "event_id")
+    if not event_id:
+        logger.warning("event_pending_repair_node_missing_event_id")
+        return
+    try:
+        from ...database import async_session
+        from ...repositories.diagnosis_repo import DiagnosisRepo
+
+        async with async_session() as session:
+            await DiagnosisRepo(session).mark_event_in_repair(event_id)
+            await session.commit()
+    except (OSError, ConnectionError, TimeoutError, _DBIntegrityError):
+        logger.warning("event_pending_repair_fallback", event_id=event_id, exc_info=True)
+    except Exception as e:
+        logger.error("event_pending_repair_unexpected_error", event_id=event_id, exc_info=True)
 
 
 async def event_pending_repair_node(state: ModelLifecycleState) -> dict:
@@ -1073,15 +1358,25 @@ async def calibration_plan_node(state: ModelLifecycleState) -> dict:
             },
         }
 
-    # interrupt 等待 Worker 回调
+    # interrupt 等待 Worker 回调（fail-closed：无 status 不得默认成功）
     resume_data = interrupt("waiting_calibration_callback")
-    callback_status: str | None = None
-    calibrator_uri: str | None = None
-    if isinstance(resume_data, dict):
-        callback_status = str(resume_data.get("status", "SUCCEEDED")).upper()
-        calibrator_uri = resume_data.get("calibrator_artifact_uri")
+    if not isinstance(resume_data, dict) or not resume_data.get("status"):
+        return {
+            "calibration_plan_id": plan["calibration_plan_id"],
+            "current_phase": LifecyclePhase.FAILED.value,
+            "last_error": {
+                "reason": "calibration_callback_contract_invalid",
+                "message": "校准回调缺少 status 字段，按失败处理",
+                "at": _now_iso(),
+            },
+        }
+    callback_status = str(resume_data["status"]).upper()
+    # Worker 回调字段为 artifact_uri（与包版执行合同一致）
+    calibrator_uri = resume_data.get("artifact_uri") or resume_data.get(
+        "calibrator_artifact_uri"
+    )
 
-    if callback_status == "FAILED":
+    if callback_status != "SUCCEEDED":
         logger.error("calibration_worker_failed", plan_id=plan["calibration_plan_id"])
         return {
             "calibration_plan_id": plan["calibration_plan_id"],
@@ -1089,8 +1384,7 @@ async def calibration_plan_node(state: ModelLifecycleState) -> dict:
             "last_error": {
                 "reason": "calibration_worker_failed",
                 "message": (
-                    resume_data.get("error_message")
-                    if isinstance(resume_data, dict) else "校准 Worker 执行失败"
+                    resume_data.get("error_message") or "校准 Worker 执行失败"
                 ),
                 "at": _now_iso(),
             },
@@ -1105,10 +1399,20 @@ async def calibration_plan_node(state: ModelLifecycleState) -> dict:
         except Exception:
             pass
 
+    adjustment_execution_result = {
+        "status": callback_status,
+        "artifact_uri": calibrator_uri,
+        "artifact_checksum": resume_data.get("artifact_checksum"),
+        "metrics": resume_data.get("metrics") or {},
+        "consumption_receipt": resume_data.get("consumption_receipt") or {},
+    }
+
     return {
         "calibration_plan_id": plan["calibration_plan_id"],
         "challenger_version": candidate_version,
         "calibrator_artifact_uri": calibrator_uri,
+        "adjustment_artifact_checksum": adjustment_execution_result["artifact_checksum"],
+        "adjustment_execution_result": adjustment_execution_result,
         "current_phase": LifecyclePhase.OFFLINE_VALIDATING.value,
     }
 
@@ -1168,15 +1472,25 @@ async def threshold_plan_node(state: ModelLifecycleState) -> dict:
             },
         }
 
-    # interrupt 等待 Worker 回调
+    # interrupt 等待 Worker 回调（fail-closed：无 status 不得默认成功）
     resume_data = interrupt("waiting_threshold_callback")
-    callback_status: str | None = None
-    threshold_uri: str | None = None
-    if isinstance(resume_data, dict):
-        callback_status = str(resume_data.get("status", "SUCCEEDED")).upper()
-        threshold_uri = resume_data.get("threshold_artifact_uri")
+    if not isinstance(resume_data, dict) or not resume_data.get("status"):
+        return {
+            "threshold_plan_id": plan["threshold_plan_id"],
+            "current_phase": LifecyclePhase.FAILED.value,
+            "last_error": {
+                "reason": "threshold_callback_contract_invalid",
+                "message": "阈值回调缺少 status 字段，按失败处理",
+                "at": _now_iso(),
+            },
+        }
+    callback_status = str(resume_data["status"]).upper()
+    # Worker 回调字段为 artifact_uri（与包版执行合同一致）
+    threshold_uri = resume_data.get("artifact_uri") or resume_data.get(
+        "threshold_artifact_uri"
+    )
 
-    if callback_status == "FAILED":
+    if callback_status != "SUCCEEDED":
         logger.error("threshold_worker_failed", plan_id=plan["threshold_plan_id"])
         return {
             "threshold_plan_id": plan["threshold_plan_id"],
@@ -1184,8 +1498,7 @@ async def threshold_plan_node(state: ModelLifecycleState) -> dict:
             "last_error": {
                 "reason": "threshold_worker_failed",
                 "message": (
-                    resume_data.get("error_message")
-                    if isinstance(resume_data, dict) else "阈值 Worker 执行失败"
+                    resume_data.get("error_message") or "阈值 Worker 执行失败"
                 ),
                 "at": _now_iso(),
             },
@@ -1200,10 +1513,20 @@ async def threshold_plan_node(state: ModelLifecycleState) -> dict:
         except Exception:
             pass
 
+    adjustment_execution_result = {
+        "status": callback_status,
+        "artifact_uri": threshold_uri,
+        "artifact_checksum": resume_data.get("artifact_checksum"),
+        "metrics": resume_data.get("metrics") or {},
+        "consumption_receipt": resume_data.get("consumption_receipt") or {},
+    }
+
     return {
         "threshold_plan_id": plan["threshold_plan_id"],
         "challenger_version": candidate_version,
         "threshold_artifact_uri": threshold_uri,
+        "adjustment_artifact_checksum": adjustment_execution_result["artifact_checksum"],
+        "adjustment_execution_result": adjustment_execution_result,
         "current_phase": LifecyclePhase.OFFLINE_VALIDATING.value,
     }
 
@@ -1425,23 +1748,60 @@ async def training_plan_node(state: ModelLifecycleState) -> dict:
         }
     manual_review_id = _g(state, "manual_review_id")
     if not manual_review_id:
-        logger.warning("training_plan_missing_manual_review_id", proposal_id=proposal_id)
-        return {
-            "requires_manual_review": True,
-            "current_phase": LifecyclePhase.MANUAL_REVIEW.value,
-        }
+        # A7 定稿 §3 节点合同 requires_manual_approval=false：
+        # 低风险提案（L1 + 风险评估均未要求人工复核）由系统自动批准，
+        # 生成 AUTO_RULE 批准记录（可审计）；高风险（full_retrain/SEVERE/
+        # 需要人工的提案）在路由层已去 ManualReviewNode，不会走到这里。
+        if _g(state, "requires_manual_review", False):
+            logger.warning(
+                "training_plan_missing_manual_review_id", proposal_id=proposal_id
+            )
+            return {
+                "requires_manual_review": True,
+                "current_phase": LifecyclePhase.MANUAL_REVIEW.value,
+            }
+        logger.info(
+            "training_plan_auto_approval",
+            proposal_id=proposal_id,
+            message="低风险提案自动批准（A7 定稿 requires_manual_approval=false）",
+        )
     try:
         from ...database import async_session
         from ...repositories.iteration_repo import IterationRepo
         from ...services.iteration import RiskAssessmentService, TrainingPlanBuilder
         from ...services.iteration.config_loader import load_iteration_config
         from packages.models.common.enums import ProposalStatus
+        from packages.models.iteration import ManualReviewReport
+        from packages.models.common.enums import ReviewDecision
 
         async with async_session() as session:
             repo = IterationRepo(session)
             proposal = await repo.get_proposal(proposal_id)
             if proposal is None:
                 return {"current_phase": LifecyclePhase.MANUAL_REVIEW.value}
+
+            if not manual_review_id:
+                # 自动批准：系统生成批准记录（reviewer=system-auto-approver，
+                # decision=APPROVE，全程落库可审计）
+                auto_report = ManualReviewReport(
+                    review_id=str(uuid.uuid4()),
+                    proposal_id=proposal_id,
+                    reviewer_id="system-auto-approver",
+                    decision=ReviewDecision.APPROVE,
+                    reason=(
+                        "AUTO_APPROVAL:L1_AND_RISK_ASSESSMENT_NO_MANUAL_REVIEW_"
+                        "REQUIRED;A7_REQUIRES_MANUAL_APPROVAL_FALSE"
+                    ),
+                    reviewed_at=datetime.now(timezone.utc),
+                )
+                await repo.save_review(auto_report)
+                manual_review_id = auto_report.review_id
+                await session.commit()
+                logger.info(
+                    "training_plan_auto_approval_created",
+                    proposal_id=proposal_id,
+                    review_id=manual_review_id,
+                )
 
             approval = await repo.get_approved_review(manual_review_id, proposal_id)
             if approval is None:
@@ -1461,7 +1821,8 @@ async def training_plan_node(state: ModelLifecycleState) -> dict:
 
             risk = RiskAssessmentService().assess(approved_proposal)
             iteration_config = load_iteration_config()
-            iteration_run_id = str(uuid.uuid4())
+            # A7 §5: 第二轮复用同一 iteration_run_id（业务轮次切换，非新迭代）
+            iteration_run_id = _g(state, "iteration_run_id") or str(uuid.uuid4())
             business_round = _g(state, "business_round") or 1
 
             # T3-GAP-01: 使用特征重构产出的 schema_version
@@ -1492,13 +1853,34 @@ async def training_plan_node(state: ModelLifecycleState) -> dict:
                 model_algorithm=algorithm,
                 business_round=business_round,
                 data_snapshot_ids=snapshot_ids if snapshot_ids else None,
+                # A7 阶段四：特征筛选产物（FEATURE_SELECTION 模式）
+                unstable_feature_codes=[
+                    str(c).strip()
+                    for c in (_g(state, "unstable_feature_codes") or "").split(",")
+                    if str(c).strip()
+                ],
+                selected_feature_codes=[
+                    str(c).strip()
+                    for c in (_g(state, "selected_feature_codes") or "").split(",")
+                    if str(c).strip()
+                ],
+                feature_selection_artifact_uri=(
+                    _g(state, "feature_selection_artifact_uri")
+                ),
             )
 
-            await repo.create_iteration_run(
-                iteration_run_id,
-                approved_proposal,
-                max_rounds,
-            )
+            if business_round == 1:
+                await repo.create_iteration_run(
+                    iteration_run_id,
+                    approved_proposal,
+                    max_rounds,
+                )
+            else:
+                # 第二轮复用同一 iteration_run_id：只更新当前 Proposal 引用，
+                # 不重复 INSERT（否则主键冲突），也不覆盖首轮冻结信息
+                await repo.update_iteration_run_proposal(
+                    iteration_run_id, approved_proposal.proposal_id,
+                )
             await repo.save_training_plan(plan)
             await repo.create_round_and_experiment(plan)
             await session.commit()
@@ -1518,6 +1900,8 @@ async def training_plan_node(state: ModelLifecycleState) -> dict:
                 "iteration_run_id": iteration_run_id,
                 "experiment_id": plan.experiment_id,
                 "business_round": business_round,
+                # A7 §5: 人工批准由真实 Review 记录推导（此处必已 APPROVED）
+                "manual_approval": True,
                 "current_phase": LifecyclePhase.ITERATING.value,
             }
             if plan_warnings:
@@ -1765,7 +2149,17 @@ async def training_job_dispatch_node(state: ModelLifecycleState) -> dict:
                 qualification_rule_version=plan.qualification_rule_version if plan else "qualification-rules-v1",
                 base_model_version=plan.frozen_champion_version if plan else _g(state, "champion_version"),
                 seed=plan.random_seed if plan else 2026,
-                training_mode=_g(state, "training_mode") or "full",
+                training_mode=_g(state, "training_mode") or "FULL_RETRAIN",
+                # A7 阶段四：特征筛选合同传递（TrainingPlan → TrainingJob）
+                unstable_feature_codes=(
+                    plan.unstable_feature_codes if plan else []
+                ),
+                selected_feature_codes=(
+                    plan.selected_feature_codes if plan else []
+                ),
+                feature_selection_artifact_uri=(
+                    plan.feature_selection_artifact_uri if plan else None
+                ),
                 artifact_output_uri=(
                     f"s3://riskitem/challengers/{plan.model_id if plan else _g(state, 'model_id', 'unknown')}"
                     f"/{iteration_run_id}/round-{business_round}"
@@ -1952,7 +2346,9 @@ async def qualification_node(state: ModelLifecycleState) -> dict:
                 AgentDecisionAction.CALIBRATION_ADJUSTMENT.value,
                 AgentDecisionAction.THRESHOLD_ADJUSTMENT.value,
             }:
-                # 轻量调整作用于现有 champion，不产生新模型 artifact
+                # 轻量调整作用于现有 champion，不产生新模型 artifact。
+                # 资格由真实执行产物判定（qualify_adjustment）：没有执行结果
+                # 不得直接通过（fail-closed，杜绝"假通过"）。
                 champion_version = _g(state, "champion_version")
                 if not champion_version:
                     return {
@@ -1961,18 +2357,41 @@ async def qualification_node(state: ModelLifecycleState) -> dict:
                     }
                 candidate_version = _g(state, "challenger_version") or champion_version
                 report_id = str(uuid.uuid4())
+                adjustment_result = _g(state, "adjustment_execution_result") or {}
+                if not adjustment_result:
+                    logger.warning(
+                        "qualification_node_adjustment_result_missing",
+                        action=action,
+                    )
+                    return {
+                        "qualification_run_id": report_id,
+                        "challenger_version": candidate_version,
+                        "challenger_qualified": False,
+                        "iteration_exit_reason": "ADJUSTMENT_EXECUTION_RESULT_MISSING",
+                        "current_phase": LifecyclePhase.QUALIFICATION_COMPLETED.value,
+                    }
+                from ...services.iteration.action_execution_service import (
+                    qualify_adjustment,
+                )
+                qualified, reasons = qualify_adjustment(
+                    action, adjustment_result
+                )
                 logger.info(
                     "qualification_node_lightweight_adjustment",
                     qualification_run_id=report_id,
                     recommended_action=action,
                     candidate_version=candidate_version,
+                    qualified=qualified,
+                    reasons=reasons,
                 )
                 return {
                     "qualification_run_id": report_id,
                     "challenger_version": candidate_version,
-                    "challenger_qualified": True,
+                    "challenger_qualified": qualified,
+                    "iteration_exit_reason": (
+                        None if qualified else "ADJUSTMENT_QUALIFICATION_FAILED"
+                    ),
                     "current_phase": LifecyclePhase.QUALIFICATION_COMPLETED.value,
-                #这不是字面上的"线下验证中"——它在这里的含义是 "资格验证未通过，等待下一轮迭代或人工介入"
                 }
             if experiment is None or experiment.get("technical_status") != "SUCCEEDED":
                 return {
@@ -2001,7 +2420,10 @@ async def qualification_node(state: ModelLifecycleState) -> dict:
                 or (recovery_ks is not None and recovery_ks >= 1.0)
             ) if (recovery_auc is not None or recovery_ks is not None) else False
 
-            # 核心性能未达标 → 直接不合格，不进入七道 Gate
+            # 核心性能未达标 → 直接不合格，不进入七道 Gate。
+            # 仍落一份真实资格报告（TARGET_RECOVERY FAILED），
+            # 失败归因节点需要它才能生成第二轮证据——不落报告会
+            # 导致 failure_analysis 报 QUALIFICATION_REPORT_NOT_FOUND。
             if not core_perf_passed:
                 report_id = str(uuid.uuid4())
                 logger.warning(
@@ -2011,6 +2433,66 @@ async def qualification_node(state: ModelLifecycleState) -> dict:
                     recovery_ks=recovery_ks,
                     score_psi=score_psi,
                 )
+                from packages.models.common.enums import (
+                    QualificationGateCode,
+                    QualificationStatus,
+                )
+                from packages.models.iteration.qualification import (
+                    QualificationGateResult,
+                    QualificationReport,
+                )
+                from ...services.iteration.config_loader import (
+                    load_iteration_config,
+                )
+
+                try:
+                    rule_version = load_iteration_config().qualification.rule_version
+                except Exception:
+                    rule_version = "qualification-rules-v2"
+                await repo.save_qualification(
+                    QualificationReport(
+                        qualification_run_id=report_id,
+                        iteration_run_id=iteration_run_id or "",
+                        experiment_id=experiment_id or "",
+                        candidate_version=candidate_version,
+                        status=QualificationStatus.FAILED,
+                        qualified=False,
+                        gate_results=[
+                            QualificationGateResult(
+                                gate_code=QualificationGateCode.TARGET_RECOVERY,
+                                gate_order=1,
+                                status=QualificationStatus.FAILED,
+                                required=True,
+                                actual={},
+                                metrics={
+                                    "AUC": {
+                                        "recovery_rate": recovery_auc,
+                                        "healthy_range_reached": False,
+                                    },
+                                    "KS": {
+                                        "recovery_rate": recovery_ks,
+                                        "healthy_range_reached": False,
+                                    },
+                                },
+                                reasons=[
+                                    f"RECOVERY_RATE_FAILED:{code}"
+                                    for code, value in (
+                                        ("AUC", recovery_auc),
+                                        ("KS", recovery_ks),
+                                    )
+                                    if value is not None
+                                ],
+                            )
+                        ],
+                        failed_gate_codes=[
+                            QualificationGateCode.TARGET_RECOVERY,
+                        ],
+                        rule_version=rule_version,
+                        qualification_stage="PRE_OOT",
+                        allow_w4=False,
+                    )
+                )
+                await session.commit()
                 return {
                     "qualification_run_id": report_id,
                     "challenger_version": candidate_version,
@@ -2020,58 +2502,56 @@ async def qualification_node(state: ModelLifecycleState) -> dict:
                 }
 
             # 从 validation_metrics 构建真实 MetricComparison 列表
-            from packages.models.iteration.qualification import MetricComparison
-            target_metrics: list = []
-            # AUC
-            if validation_metrics.get("challenger_auc") is not None:
-                target_metrics.append(MetricComparison(
-                    metric_code="AUC",
-                    direction="HIGHER_BETTER",
-                    original_drop=validation_metrics.get("original_drop"),
-                    recovered_amount=validation_metrics.get("recovered_amount"),
-                    recovery_rate=validation_metrics.get("recovery_auc"),
-                    champion_value=validation_metrics.get("champion_auc"),
-                    challenger_value=validation_metrics.get("challenger_auc"),
-                    healthy_lower_bound=validation_metrics.get("healthy_lower_bound"),
-                    healthy_upper_bound=validation_metrics.get("healthy_upper_bound"),
-                    bootstrap_ci_lower=validation_metrics.get("bootstrap_ci_lower"),
-                    bootstrap_ci_upper=validation_metrics.get("bootstrap_ci_upper"),
-                ))
-            # KS
-            if validation_metrics.get("challenger_ks") is not None:
-                target_metrics.append(MetricComparison(
-                    metric_code="KS",
-                    direction="HIGHER_BETTER",
-                    original_drop=None,
-                    recovered_amount=None,
-                    recovery_rate=validation_metrics.get("recovery_ks"),
-                    champion_value=validation_metrics.get("champion_ks"),
-                    challenger_value=validation_metrics.get("challenger_ks"),
-                    healthy_lower_bound=None,
-                    healthy_upper_bound=None,
-                    bootstrap_ci_lower=None,
-                    bootstrap_ci_upper=None,
-                ))
+            # A7 §5: 特征级 PSI 来自真实监测漂移数据，
+            # 供 STABILITY 门生成结构化 unstable_feature_codes
+            feature_psi: dict[str, float] = {}
+            if _g(state, "monitoring_run_id"):
+                from ...repositories.monitoring_repo import MonitoringRepo
+                drift_rows = await MonitoringRepo(session).get_feature_drift_by_run(
+                    _g(state, "monitoring_run_id")
+                )
+                for row in drift_rows:
+                    fname = row.get("feature_name")
+                    psi = row.get("psi")
+                    if fname and psi is not None:
+                        feature_psi[str(fname)] = max(
+                            feature_psi.get(str(fname), 0.0), float(psi)
+                        )
 
-            qual_input = QualificationInput(
-                qualification_run_id=str(uuid.uuid4()),
-                iteration_run_id=iteration_run_id or "",
-                experiment_id=experiment_id or "",
-                candidate_version=candidate_version,
-                target_metrics=target_metrics,
-                data_reproducible=experiment_json.get("data_reproducible", False),
-                discrimination_passed=validation_metrics.get("discrimination_passed", False),
-                calibration_passed=validation_metrics.get("calibration_passed", False),
-                score_psi=score_psi if score_psi is not None else 1.0,
-                train_valid_gap=validation_metrics.get("train_valid_gap"),
-                segment_governance_passed=segment_metrics.get("segment_governance_passed", False),
-                oot_window_id="W4",
-                candidate_frozen_before_oot=experiment_json.get("candidate_frozen_before_oot", False),
-                oot_usage="FINAL_QUALIFICATION",
-                oot_passed=validation_metrics.get("oot_passed", False),
+            # 共享构建入口：Graph 与外部资格端点使用同一套逻辑，
+            # 必填证据缺失时拒绝评估（禁止 fail-open）
+            from ...services.iteration.qualification_service import (
+                QualificationEvidenceIncompleteError,
+                build_qualification_input,
             )
+            try:
+                qual_input = build_qualification_input(
+                    qualification_run_id=str(uuid.uuid4()),
+                    iteration_run_id=iteration_run_id or "",
+                    experiment_id=experiment_id or "",
+                    candidate_version=candidate_version,
+                    experiment_json=experiment_json,
+                    feature_psi=feature_psi,
+                    include_oot=False,  # W3 预资格：OOT 门在 W4 完成后单独重跑
+                )
+            except QualificationEvidenceIncompleteError as evidence_exc:
+                logger.warning(
+                    "qualification_evidence_incomplete",
+                    missing_fields=evidence_exc.missing_fields,
+                )
+                return {
+                    "qualification_run_id": str(uuid.uuid4()),
+                    "challenger_qualified": False,
+                    "iteration_exit_reason": "QUALIFICATION_EVIDENCE_INCOMPLETE",
+                    "current_phase": LifecyclePhase.OFFLINE_VALIDATING.value,
+                    "last_error": {
+                        "reason": "QUALIFICATION_EVIDENCE_INCOMPLETE",
+                        "message": str(evidence_exc),
+                        "at": _now_iso(),
+                    },
+                }
 
-            report = svc.evaluate(qual_input)
+            report = svc.evaluate(qual_input, include_oot=False)
             await repo.save_qualification(report)
             await session.commit()
 
@@ -2120,23 +2600,94 @@ async def qualification_node(state: ModelLifecycleState) -> dict:
 
 
 async def failure_analysis_node(state: ModelLifecycleState) -> dict:
-    """Record why a challenger failed qualification before the next round decision."""
-    failure_report_id = _g(state, "failure_report_id") or str(uuid.uuid4())
+    """W3 失败归因：调用真实 FailureAttributionService，持久化失败报告。
+
+    归因报告是第二轮证据（unstable_feature_subset_confirmed /
+    feature_selection_evidence_available）的真实来源，不能用随机 ID 代替。
+    """
+    failure_report_id = _g(state, "failure_report_id")
+    failed_gate_codes: list[str] = []
+    unstable_feature_codes: list[str] = []
+    feature_evidence_source: str | None = None
+    feature_related_failure = False
+    attribution_error: str | None = None
+
+    try:
+        from ...database import async_session
+        from ...repositories.iteration_repo import IterationRepo
+        from ...services.iteration.failure_attribution import (
+            FailureAttributionService,
+        )
+        from packages.models.iteration.qualification import QualificationReport
+
+        experiment_id = _g(state, "experiment_id")
+        proposal_id = _g(state, "decision_proposal_id") or ""
+        if experiment_id:
+            async with async_session() as session:
+                repo = IterationRepo(session)
+                payload = await repo.get_experiment_qualification(experiment_id)
+                if payload:
+                    report = QualificationReport.model_validate(payload)
+                    attribution = FailureAttributionService().from_qualification(
+                        proposal_id, report,
+                    )
+                    if attribution is not None:
+                        failure_report_id = attribution.failure_report_id
+                        failed_gate_codes = list(attribution.failed_gate_codes)
+                        unstable_feature_codes = list(
+                            attribution.unstable_feature_codes
+                        )
+                        feature_evidence_source = (
+                            attribution.feature_evidence_source
+                        )
+                        # 必须存在经归因确认的特征，才授予不稳定特征子集证据
+                        feature_related_failure = bool(unstable_feature_codes)
+                        await repo.save_failure(attribution)
+                        await session.commit()
+                    else:
+                        attribution_error = "QUALIFICATION_PASSED_NO_FAILURE"
+        # 归因失败时不生成随机 failure_report_id：没有真实报告，
+        # 不允许基于该证据的自动决策（第二轮特征筛选证据不授予）
+        if failure_report_id is None:
+            attribution_error = attribution_error or "QUALIFICATION_REPORT_NOT_FOUND"
+    except Exception as exc:
+        logger.warning("failure_attribution_failed err=%s", exc)
+        attribution_error = f"ATTRIBUTION_ERROR: {exc}"
+
     logger.info(
         "failure_analysis_node",
         lifecycle_run_id=_g(state, "lifecycle_run_id"),
         qualification_run_id=_g(state, "qualification_run_id"),
         business_round=_g(state, "business_round") or 1,
+        failure_report_id=failure_report_id,
+        failed_gate_codes=failed_gate_codes,
+        feature_related_failure=feature_related_failure,
     )
     return {
         "failure_report_id": failure_report_id,
+        "failed_gate_codes": ",".join(failed_gate_codes) if failed_gate_codes else None,
+        "unstable_feature_codes": (
+            ",".join(unstable_feature_codes) if unstable_feature_codes else None
+        ),
+        "feature_evidence_source": feature_evidence_source,
+        # 第二轮特征筛选证据的真实来源：至少一个经归因确认的特征
+        "unstable_feature_subset_confirmed": feature_related_failure,
         "iteration_exit_reason": "QUALIFICATION_FAILED",
         "current_phase": LifecyclePhase.OFFLINE_VALIDATING.value,
+        "last_error": (
+            {"reason": attribution_error, "at": _now_iso()}
+            if attribution_error else None
+        ),
     }
 
 
 async def next_round_plan_node(state: ModelLifecycleState) -> dict:
-    """P3 下一轮计划节点 — 资格失败且轮次 < 3 时进入。"""
+    """P3 下一轮计划节点 — 资格失败且轮次 < max 时进入。
+
+    P0 修复：进入下一轮必须清理首轮部署与 W4 状态，否则第二轮 OOT
+    成功后 route_after_deployment_gate 会发现
+    final_qualification_completed=True，跳过新 Challenger 的最终七门资格。
+    """
     business_round = (_g(state, "business_round") or 1) + 1
 
     logger.info(
@@ -2149,6 +2700,20 @@ async def next_round_plan_node(state: ModelLifecycleState) -> dict:
         "business_round": business_round,
         "iteration_exit_reason": None,
         "current_phase": LifecyclePhase.ITERATING.value,
+        # ── 下一轮状态重置（部署与 W4 状态属于上一轮 Challenger）──
+        "final_qualification_completed": False,
+        "deployment_stage": "OFFLINE_VALIDATION",
+        "deployment_decision": None,
+        "deployment_id": None,
+        "oot_validation_completed": False,
+        "oot_validation_run_id": None,
+        "w4_available": False,
+        "oot_passed": None,
+        "candidate_frozen_before_oot": False,
+        "lifecycle_terminal": False,
+        "challenger_qualified": None,
+        "challenger_version": None,
+        "qualification_run_id": None,
     }
 
 
@@ -2192,7 +2757,7 @@ async def deployment_gate_node(state: ModelLifecycleState) -> dict:
 
     # ── Step 1: Observe ──
     health_metrics = state_dict.get("validation_metrics") or state_dict.get("training_metrics") or {}
-    health_result, alerts = await _deployment_observe(
+    health_result, alerts, oot_evidence = await _deployment_observe(
         state, current_stage, health_metrics, lifecycle_run_id, deployment_id
     )
 
@@ -2244,7 +2809,9 @@ async def deployment_gate_node(state: ModelLifecycleState) -> dict:
     )
 
     # 合并结果返回
-    return _deployment_subgraph_result(deployment_id, gatekeeper_decision, action_result)
+    return _deployment_subgraph_result(
+        deployment_id, gatekeeper_decision, action_result, oot_evidence,
+    )
 
 
 # ── P1: DeploymentObserve ──────────────────────────────────────
@@ -2263,6 +2830,18 @@ async def _deployment_observe(
     state_dict = _state_dict(state)
 
     # 健康检查
+    # W4 完成证据（A7 §10 NATURAL 校准门槛）：
+    # 从 State 继承已有证据，OOT_GATE 真实执行时更新；
+    # 后续 Canary/Production 阶段不得清空（否则 PROMOTE/ROLLBACK
+    # 会拿不到 W4 证据，NATURAL 观测全部丢失）
+    oot_validation_completed = bool(_g(state, "oot_validation_completed"))
+    oot_w4_available = bool(_g(state, "w4_available"))
+    oot_candidate_frozen = bool(_g(state, "candidate_frozen_before_oot"))
+    oot_passed = _g(state, "oot_passed")
+    oot_lifecycle = (
+        _g(state, "oot_validation_run_id")
+        or _g(state, "lifecycle_run_id", "")
+    )
     health_passed_explicit = state_dict.get("deployment_health_passed")
     force_rollback = bool(state_dict.get("deployment_force_rollback"))
     if force_rollback:
@@ -2281,10 +2860,10 @@ async def _deployment_observe(
             "rollback_recommended": False,
             "rollback_reasons": [],
         }
-    elif health_metrics:
-        health_result = DeploymentSafetyService.check_stage_health(stage, health_metrics)
     elif stage == "OOT_GATE":
         # ── OOT_GATE: Task 4 独立 W4 盲测 ──
+        # 阶段判断必须优先于 health_metrics：资格验证完成后 validation_metrics
+        # 通常非空，若先命中 health_metrics 分支，真实 W4 验证会被跳过
         challenger_version = _g(state, "challenger_version", "")
         candidate_version_oot = state_dict.get("challenger_version") or challenger_version
         oot_model_id = _g(state, "model_id", "")
@@ -2333,6 +2912,11 @@ async def _deployment_observe(
                     oot_result.get("oot_auc", -1), oot_result.get("oot_ks", -1),
                     oot_result["w4_available"],
                 )
+                # W4 完成证据写入 State（观测层据此判定 NATURAL 门槛）
+                oot_validation_completed = bool(oot_result["w4_available"])
+                oot_w4_available = bool(oot_result["w4_available"])
+                oot_candidate_frozen = True
+                oot_passed = bool(oot_result["oot_passed"])
 
                 # ── OOT 结果回写到 experiment，供 qualification_node Gate 6 读取 ──
                 oot_experiment_id = _g(state, "experiment_id", "")
@@ -2374,6 +2958,8 @@ async def _deployment_observe(
                 "rollback_recommended": False,
                 "rollback_reasons": [],
             }
+    elif health_metrics:
+        health_result = DeploymentSafetyService.check_stage_health(stage, health_metrics)
     elif stage in {"OFFLINE_VALIDATION"}:
         health_result = {"passed": True, "failures": [], "warnings": ["no_health_metrics_provided"]}
     else:
@@ -2394,7 +2980,14 @@ async def _deployment_observe(
         deployment_id=deployment_id,
     )
 
-    return health_result, alerts
+    oot_evidence = {
+        "completed": oot_validation_completed,
+        "lifecycle": oot_lifecycle,
+        "w4_available": oot_w4_available,
+        "candidate_frozen_before_oot": oot_candidate_frozen,
+        "oot_passed": oot_passed,
+    }
+    return health_result, alerts, oot_evidence
 
 
 # ── P0: DeploymentKnowledge ────────────────────────────────────
@@ -2611,9 +3204,11 @@ def _deployment_subgraph_result(
     deployment_id: str,
     gatekeeper_decision,
     action_result: dict,
+    oot_evidence: dict | None = None,
 ) -> dict:
     """构建子图返回值。"""
     decision = action_result.get("deployment_decision", gatekeeper_decision.decision)
+    oot_evidence = oot_evidence or {}
     return {
         "deployment_id": deployment_id,
         "deployment_stage": action_result.get("deployment_stage", ""),
@@ -2621,6 +3216,18 @@ def _deployment_subgraph_result(
         "gatekeeper_decision": gatekeeper_decision.decision,
         "gatekeeper_reasons": gatekeeper_decision.decision_reasons,
         "selected_deployment_strategy": gatekeeper_decision.selected_strategy_code,
+        # A7 §10: W4 FINAL-OOT 完成证据（观测层 NATURAL 门槛）
+        "oot_validation_completed": bool(oot_evidence.get("completed")),
+        "oot_validation_run_id": (
+            oot_evidence.get("lifecycle")
+            if oot_evidence.get("completed") else None
+        ),
+        "w4_available": bool(oot_evidence.get("w4_available")),
+        "candidate_frozen_before_oot": bool(
+            oot_evidence.get("candidate_frozen_before_oot")
+        ),
+        "oot_passed": oot_evidence.get("oot_passed"),
+        "lifecycle_terminal": decision in {"PROMOTE", "ROLLBACK"},
         "last_error": (
             {
                 "reason": "deployment_action_failed",
@@ -2687,7 +3294,268 @@ async def event_close_node(state: ModelLifecycleState) -> dict:
         except (OSError, ConnectionError, TimeoutError, _DBIntegrityError):
             logger.warning("event_close_fallback", exc_info=True)
 
-    # P4 KG: 生命周期结束后写入 KG 观测
+    return {
+        "current_phase": LifecyclePhase.EVENT_CLOSED.value,
+    }
+
+
+def _build_correlation_matrix(
+    state: ModelLifecycleState, feature_names: list[str],
+) -> dict[str, dict[str, float]]:
+    """从真实训练窗口数据（W2/W3）计算特征共线性矩阵（第三路筛选证据）。"""
+    import pandas as pd
+
+    from ...services.monitoring.window_loader import load_window
+
+    frames = []
+    for wid in ("W2", "W3"):
+        try:
+            frames.append(load_window(wid))
+        except Exception:
+            continue
+    if not frames:
+        return {}
+    df = pd.concat(frames, ignore_index=True)
+    cols = [c for c in feature_names if c in df.columns]
+    if len(cols) < 2:
+        return {}
+    corr = df[cols].fillna(0).corr()
+    matrix: dict[str, dict[str, float]] = {}
+    for a in cols:
+        row: dict[str, float] = {}
+        for b in cols:
+            if a == b:
+                continue
+            value = corr.loc[a, b]
+            if pd.notna(value):
+                row[b] = float(value)
+        if row:
+            matrix[a] = row
+    return matrix
+
+
+def _save_selection_report_artifact(
+    state: ModelLifecycleState, report_json: str,
+) -> str | None:
+    """筛选报告持久化到 MinIO，返回 artifact URI；不可用时返回 None。"""
+    import json as _json
+
+    try:
+        from minio import Minio
+
+        client = Minio(
+            "localhost:9000",
+            access_key="minioadmin",
+            secret_key="minioadmin",
+            secure=False,
+        )
+        object_name = (
+            f"feature-selection/{_g(state, 'lifecycle_run_id')}"
+            f"/selection-report.json"
+        )
+        data = _json.dumps(
+            _json.loads(report_json), ensure_ascii=False,
+        ).encode("utf-8")
+        client.put_object(
+            "riskitem", object_name, __import__("io").BytesIO(data), len(data),
+        )
+        return f"s3://riskitem/{object_name}"
+    except Exception as exc:
+        logger.warning("feature_selection_artifact_save_failed err=%s", exc)
+        return None
+
+
+async def feature_selection_node(state: ModelLifecycleState) -> dict:
+    """A7 阶段四：特征筛选节点（FEATURE_SELECTION 模式）。
+
+    基于真实归因证据（unstable_feature_codes + 特征重要性）生成
+    冻结特征清单，写入 State 供 TrainingPlan / TrainingJob / Worker 消费。
+    不简单删除所有漂移特征：只剔除经归因确认的不稳定特征 +
+    低重要性 + 高共线性（保留更重要者）。
+    """
+    unstable = [
+        str(c).strip()
+        for c in (_g(state, "unstable_feature_codes") or "").split(",")
+        if str(c).strip()
+    ]
+    feature_importance = _g(state, "feature_importance") or {}
+    feature_names = _g(state, "feature_names") or []
+    if not feature_names:
+        return {
+            "requires_manual_review": True,
+            "current_phase": LifecyclePhase.MANUAL_REVIEW.value,
+            "last_error": {
+                "reason": "FEATURE_SELECTION_NO_FEATURE_NAMES",
+                "message": "诊断输出缺少 feature_names，无法执行特征筛选",
+                "at": _now_iso(),
+            },
+        }
+    try:
+        from ...services.iteration.feature_selection_service import (
+            select_features,
+            serialize_selection,
+        )
+        # 第三路证据：共线性矩阵来自真实训练窗口数据（W2/W3）
+        correlation_matrix = _build_correlation_matrix(state, feature_names)
+        result = select_features(
+            list(feature_names),
+            unstable_feature_codes=unstable,
+            feature_importance={
+                str(k): float(v) for k, v in feature_importance.items()
+            },
+            correlation_matrix=correlation_matrix,
+        )
+        # 筛选报告持久化到 MinIO，生成真实 artifact URI
+        artifact_uri = _save_selection_report_artifact(
+            state, serialize_selection(result),
+        )
+        result.feature_selection_artifact_uri = artifact_uri
+        logger.info(
+            "feature_selection_completed",
+            lifecycle_run_id=_g(state, "lifecycle_run_id"),
+            selected_count=len(result.selected_feature_codes),
+            dropped_count=len(result.dropped_feature_codes),
+            drop_reasons=result.drop_reasons,
+            artifact_uri=artifact_uri,
+        )
+        return {
+            "selected_feature_codes": ",".join(result.selected_feature_codes),
+            "feature_selection_report": serialize_selection(result),
+            "feature_selection_artifact_uri": artifact_uri,
+            "warnings": [
+                f"FEATURE_SELECTION_DROPPED:{code}:{reason}"
+                for code, reason in result.drop_reasons.items()
+            ] or None,
+        }
+    except Exception as exc:
+        logger.warning("feature_selection_failed err=%s", exc)
+        return {
+            "requires_manual_review": True,
+            "current_phase": LifecyclePhase.MANUAL_REVIEW.value,
+            "last_error": {
+                "reason": "FEATURE_SELECTION_FAILED",
+                "message": str(exc),
+                "at": _now_iso(),
+            },
+        }
+
+
+async def final_qualification_node(state: ModelLifecycleState) -> dict:
+    """A7 资格时序：W4 OOT 完成后的最终资格（Gate 6 + 汇总前六道门）。
+
+    OOT_GATE 已把 oot_passed / candidate_frozen_before_oot / w4_available
+    回写 experiment_json，此处用共享构建器重跑完整七道门并保存最终报告。
+    """
+    experiment_id = _g(state, "experiment_id")
+    if not experiment_id:
+        return {
+            "challenger_qualified": False,
+            "final_qualification_completed": True,
+            "iteration_exit_reason": "FINAL_QUALIFICATION_NO_EXPERIMENT",
+            "current_phase": LifecyclePhase.OFFLINE_VALIDATING.value,
+        }
+    try:
+        from ...database import async_session
+        from ...repositories.iteration_repo import IterationRepo
+        from ...repositories.monitoring_repo import MonitoringRepo
+        from ...services.iteration.config_loader import load_iteration_config
+        from ...services.iteration.qualification_service import (
+            QualificationEvidenceIncompleteError,
+            QualificationService,
+            build_qualification_input,
+        )
+
+        async with async_session() as session:
+            repo = IterationRepo(session)
+            experiment = await repo.get_experiment(experiment_id)
+            experiment_json = (
+                experiment.get("experiment_json") or {} if experiment else {}
+            )
+            feature_psi: dict[str, float] = {}
+            if _g(state, "monitoring_run_id"):
+                drift_rows = await MonitoringRepo(session).get_feature_drift_by_run(
+                    _g(state, "monitoring_run_id")
+                )
+                for row in drift_rows:
+                    fname = row.get("feature_name")
+                    psi = row.get("psi")
+                    if fname and psi is not None:
+                        feature_psi[str(fname)] = max(
+                            feature_psi.get(str(fname), 0.0), float(psi)
+                        )
+            qual_input = build_qualification_input(
+                qualification_run_id=str(uuid.uuid4()),
+                iteration_run_id=_g(state, "iteration_run_id") or "",
+                experiment_id=experiment_id,
+                candidate_version=_g(state, "challenger_version") or "",
+                experiment_json=experiment_json,
+                feature_psi=feature_psi,
+            )
+            report = QualificationService(load_iteration_config()).evaluate(
+                qual_input,
+            )
+            await repo.save_qualification(report)
+            await session.commit()
+
+            logger.info(
+                "final_qualification_completed",
+                qualification_run_id=report.qualification_run_id,
+                qualified=report.qualified,
+                failed_gates=[g.value for g in report.failed_gate_codes],
+            )
+            return {
+                "qualification_run_id": report.qualification_run_id,
+                "challenger_qualified": report.qualified,
+                "final_qualification_completed": True,
+                "current_phase": (
+                    LifecyclePhase.QUALIFICATION_COMPLETED.value
+                    if report.qualified
+                    else LifecyclePhase.OFFLINE_VALIDATING.value
+                ),
+            }
+    except QualificationEvidenceIncompleteError as evidence_exc:
+        logger.warning(
+            "final_qualification_evidence_incomplete",
+            missing_fields=evidence_exc.missing_fields,
+        )
+        return {
+            "challenger_qualified": False,
+            "final_qualification_completed": True,
+            "iteration_exit_reason": "QUALIFICATION_EVIDENCE_INCOMPLETE",
+            "current_phase": LifecyclePhase.OFFLINE_VALIDATING.value,
+            "last_error": {
+                "reason": "QUALIFICATION_EVIDENCE_INCOMPLETE",
+                "message": str(evidence_exc),
+                "at": _now_iso(),
+            },
+        }
+    except (OSError, ConnectionError, TimeoutError, _DBIntegrityError):
+        logger.warning("final_qualification_infra_error", exc_info=True)
+        return {
+            "challenger_qualified": False,
+            "final_qualification_completed": True,
+            "current_phase": LifecyclePhase.FAILED.value,
+        }
+
+
+def route_after_final_qualification(
+    state: ModelLifecycleState,
+) -> Literal["DeploymentGateNode", "FailureAnalysisNode"]:
+    if _g(state, "challenger_qualified", False):
+        return "DeploymentGateNode"
+    return "FailureAnalysisNode"
+
+
+async def deployment_outcome_node(state: ModelLifecycleState) -> dict:
+    """P4 部署结果节点（A7 §10）。
+
+    PROMOTE / ROLLBACK 都经过本节点写入 KG 观测（NATURAL 门槛由
+    KnowledgeObservationService 校验 W4 完成证据 + 终态），之后：
+    - PROMOTE → EventCloseNode（关闭诊断事件）
+    - ROLLBACK → END
+    """
+    decision = _g(state, "deployment_decision")
+
     try:
         from ...database import async_session
         from ...repositories.kg_repo import KnowledgeObservationRepo
@@ -2702,15 +3570,16 @@ async def event_close_node(state: ModelLifecycleState) -> dict:
                 await session.commit()
                 logger.info(
                     "kg_observations_written",
-                    event_id=event_id,
+                    deployment_decision=decision,
                     count=len(ids),
                 )
     except Exception:
         logger.warning("kg_observation_write_failed", exc_info=True)
 
-    return {
-        "current_phase": LifecyclePhase.EVENT_CLOSED.value,
-    }
+    # ROLLBACK 保留 ROLLED_BACK 终态；只有生产 PROMOTE 关闭事件后才 EVENT_CLOSED
+    if decision == "PROMOTE":
+        return {"current_phase": LifecyclePhase.EVENT_CLOSED.value}
+    return {"current_phase": LifecyclePhase.ROLLED_BACK.value}
 
 
 async def no_alert_close_node(state: ModelLifecycleState) -> dict:
@@ -2723,39 +3592,6 @@ async def no_alert_close_node(state: ModelLifecycleState) -> dict:
 # ═══════════════════════════════════════════════════════════
 # Mock 节点（保留用于降级和阶段化开发）
 # ═══════════════════════════════════════════════════════════
-
-async def iteration_subgraph(state: ModelLifecycleState) -> dict:
-    """Mock：Legacy 任务三子图。P1+ 被 TrainingPlan → TrainingJob 替代。"""
-    run_id = str(uuid.uuid4())
-    if MOCK_CHALLENGER_QUALIFIED:
-        logger.warning("legacy_iteration_subgraph_using_mock_qualification")
-        return {
-            "iteration_run_id": run_id,
-            "challenger_version": f"{_g(state, 'champion_version')}_challenger_v1",
-            "challenger_qualified": True,
-            "current_phase": LifecyclePhase.CHALLENGER_TRAINED.value,
-        }
-    return {
-        "iteration_run_id": run_id,
-        "challenger_version": None,
-        "challenger_qualified": False,
-        "current_phase": LifecyclePhase.MANUAL_REVIEW.value,
-    }
-
-
-async def deployment_node(state: ModelLifecycleState) -> dict:
-    """Mock：Legacy 任务四。P4 被 DeploymentGateNode 替代。"""
-    return {
-        "deployment_id": str(uuid.uuid4()),
-        "deployment_stage": "OOT_GATE",
-        "deployment_decision": MOCK_DEPLOYMENT_DECISION,
-        "current_phase": (
-            LifecyclePhase.PROMOTED.value
-            if MOCK_DEPLOYMENT_DECISION == "PROMOTE"
-            else LifecyclePhase.ROLLED_BACK.value
-        ),
-    }
-
 
 # ═══════════════════════════════════════════════════════════
 # 条件路由
@@ -2800,6 +3636,7 @@ def route_after_iteration_decision(
     "CalibrationPlanNode",
     "ThresholdPlanNode",
     "FeatureReconstructionNode",
+    "FeatureSelectionNode",
     "TrainingPlanNode",
     "ManualReviewNode",
 ]:
@@ -2811,6 +3648,15 @@ def route_after_iteration_decision(
     return _route_after_action(state)
 
 
+def route_after_repair_plan(
+    state: ModelLifecycleState,
+) -> Literal["ObservationCloseNode", "StopAutoIterationNode"]:
+    """A3/A4 修复回放资格：合格 → 观察关闭；不合格 → 停止自动迭代。"""
+    if _g(state, "repair_qualified") is True:
+        return "ObservationCloseNode"
+    return "StopAutoIterationNode"
+
+
 def route_after_manual_review(
     state: ModelLifecycleState,
 ) -> Literal[
@@ -2819,6 +3665,7 @@ def route_after_manual_review(
     "CalibrationPlanNode",
     "ThresholdPlanNode",
     "FeatureReconstructionNode",
+    "FeatureSelectionNode",
     "TrainingPlanNode",
     END,
 ]:
@@ -2860,13 +3707,15 @@ def route_after_feature_reconstruction(
 def route_after_training_plan(
     state: ModelLifecycleState,
 ) -> Literal["HyperparameterTuningNode", "TrainingJobDispatchNode"]:
-    """TrainingPlan 之后：按 strategy_tier 决定是否需要超参调优。
+    """TrainingPlan 之后：按 TrainingMode 决定是否需要超参调优（A7 §7）。
 
-    full / light / tune_only → HyperparameterTuning
-    minimal / incremental     → 直接 TrainingJobDispatch（跳过调参）
+    PARAMETER_TUNING → HyperparameterTuningNode
+    其余（FULL_RETRAIN / INCREMENTAL_TRAIN / FEATURE_*）→ 直接派发训练
     """
-    tier = _g(state, "strategy_tier") or "full"
-    if tier in {"full", "light", "tune_only"}:
+    training_mode = str(
+        _g(state, "training_mode") or "FULL_RETRAIN"
+    ).upper()
+    if training_mode == "PARAMETER_TUNING":
         return "HyperparameterTuningNode"
     return "TrainingJobDispatchNode"
 
@@ -2893,14 +3742,42 @@ def route_after_qualification(
 
 def route_after_deployment_gate(
     state: ModelLifecycleState,
-) -> Literal["DeploymentGateNode", "EventCloseNode", "__end__"]:
+) -> Literal[
+    "DeploymentGateNode", "FinalQualificationNode", "DeploymentOutcomeNode", "__end__",
+]:
+    decision = _g(state, "deployment_decision")
+    if decision in {"PROMOTE", "ROLLBACK"}:
+        # OOT_GATE 阶段的失败是资格失败，不是部署结果：
+        # 先走最终资格（OOT 门 FAILED → FailureAnalysisNode 归因进入第二轮），
+        # 不写 NATURAL 部署观测；Canary/Production 的 ROLLBACK 才进
+        # DeploymentOutcomeNode 写观测。
+        if (
+            decision == "ROLLBACK"
+            and _g(state, "deployment_stage") == "OOT_GATE"
+        ):
+            return "FinalQualificationNode"
+        return "DeploymentOutcomeNode"
+    if decision == "ADVANCE_STAGE":
+        # A7 资格时序：OOT_GATE 完成（W4 证据已回写）且最终资格未跑 →
+        # 先跑 FinalQualificationNode（Gate 6 + 汇总），再进入下一部署阶段
+        if (
+            _g(state, "oot_validation_completed")
+            and not _g(state, "final_qualification_completed")
+        ):
+            return "FinalQualificationNode"
+        return "DeploymentGateNode"
+    # HOLD / ABORT → END
+    return END
+
+
+def route_after_deployment_outcome(
+    state: ModelLifecycleState,
+) -> Literal["EventCloseNode", "__end__"]:
     decision = _g(state, "deployment_decision")
     stage = _g(state, "deployment_stage")
     if decision == "PROMOTE" and stage == "PRODUCTION":
         return "EventCloseNode"
-    if decision == "ADVANCE_STAGE":
-        return "DeploymentGateNode"
-    # HOLD / ROLLBACK / ABORT → END
+    # ROLLBACK（含 Canary 回滚）→ END
     return END
 
 
@@ -2944,6 +3821,7 @@ def build_graph() -> StateGraph:
     graph.add_node("ManualReviewNode", manual_review_node)
     graph.add_node("FeatureReconstructionNode", feature_reconstruction_node)
     graph.add_node("WaitFeatureReconstructionNode", wait_feature_reconstruction_node)
+    graph.add_node("FeatureSelectionNode", feature_selection_node)
     graph.add_node("TrainingPlanNode", training_plan_node)
 
     # T3-GAP-02: 超参优化
@@ -2963,11 +3841,9 @@ def build_graph() -> StateGraph:
 
     # P4 节点
     graph.add_node("DeploymentGateNode", deployment_gate_node)
+    graph.add_node("FinalQualificationNode", final_qualification_node)
+    graph.add_node("DeploymentOutcomeNode", deployment_outcome_node)
     graph.add_node("EventCloseNode", event_close_node)
-
-    # Legacy Mock
-    graph.add_node("IterationSubgraph", iteration_subgraph)
-    graph.add_node("DeploymentNode", deployment_node)
 
     # ── 边 ──
     graph.add_edge(START, "MonitoringNode")
@@ -2982,8 +3858,11 @@ def build_graph() -> StateGraph:
     # IterationDecision 分流
     graph.add_conditional_edges("IterationDecisionNode", route_after_iteration_decision)
     graph.add_edge("ObservationCloseNode", END)
-    graph.add_edge("RepairPlanNode", "EventPendingRepairNode")
-    graph.add_edge("EventPendingRepairNode", END)
+    graph.add_conditional_edges(
+        "RepairPlanNode",
+        route_after_repair_plan,
+        {"ObservationCloseNode": "ObservationCloseNode", "StopAutoIterationNode": "StopAutoIterationNode"},
+    )
     graph.add_edge("CalibrationPlanNode", "QualificationNode")
     graph.add_edge("ThresholdPlanNode", "QualificationNode")
 
@@ -2993,6 +3872,7 @@ def build_graph() -> StateGraph:
     # FeatureReconstruction → TrainingPlan
     graph.add_conditional_edges("FeatureReconstructionNode", route_after_feature_reconstruction)
     graph.add_edge("WaitFeatureReconstructionNode", "TrainingPlanNode")
+    graph.add_edge("FeatureSelectionNode", "TrainingPlanNode")
 
     # T3-GAP-02: TrainingPlan → HyperparameterTuning → WaitTuning → TrainingJobDispatch
     graph.add_conditional_edges("TrainingPlanNode", route_after_training_plan)
@@ -3008,19 +3888,19 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges("QualificationNode", route_after_qualification)
     graph.add_conditional_edges("FailureAnalysisNode", route_after_failure_analysis)
 
-    # NextRound → 重新走 TrainingPlan
-    graph.add_edge("NextRoundPlanNode", "TrainingPlanNode")
+    # NextRound → 重新进入决策（L1 依据 business_round=2 + 失败归因重新选择策略）
+    graph.add_edge("NextRoundPlanNode", "IterationDecisionNode")
 
     # StopAutoIteration → END
     graph.add_edge("StopAutoIterationNode", END)
 
-    # P4: DeploymentGate → EventClose → END
+    # P4: DeploymentGate → OOT 后最终资格 → DeploymentOutcome（写观测）→ EventClose / END
     graph.add_conditional_edges("DeploymentGateNode", route_after_deployment_gate)
+    graph.add_conditional_edges(
+        "FinalQualificationNode", route_after_final_qualification,
+    )
+    graph.add_conditional_edges("DeploymentOutcomeNode", route_after_deployment_outcome)
     graph.add_edge("EventCloseNode", END)
-
-    # Legacy Mock edges (单元测试兼容)
-    graph.add_edge("IterationSubgraph", "DeploymentNode")
-    graph.add_edge("DeploymentNode", END)
 
     return graph
 

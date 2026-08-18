@@ -36,7 +36,10 @@ from packages.models.common.enums import (
     EvidenceDirection,
     EvidenceType,
 )
-from .metric_binding import degradation_from_delta, resolve_alert_metric_code
+from .metric_binding import (
+    degradation_from_delta,
+    resolve_metric_from_supporting_alerts,
+)
 
 # ── 窗口排序映射 ──
 _WINDOW_ORDER = {"W1": 0, "W2": 1, "W3": 2, "W4": 3, "W5": 4, "W6": 5}
@@ -57,6 +60,34 @@ def _parse_window_interval(window_id: str) -> tuple[date, date] | None:
     if start > end:
         return None
     return start, end
+
+
+def _select_disjoint_windows(window_ids: list[str]) -> list[str]:
+    """从（可能重叠的）窗口集合中抽取非重叠锚点子集。
+
+    监控产出的滑动窗口（7D 每天一步 / 30D 每 7 天一步）天然重叠；
+    时序因果需要非重叠锚点。混粒度时只保留最细粒度（7D 优先）：
+    30D 窗口会吞掉内部的 7D 窗口，且 30D 之间也互相重叠，无法形成锚点。
+    """
+    intervals = {w: _parse_window_interval(w) for w in window_ids}
+    if not all(intervals.values()):
+        return window_ids  # 无法解析的窗口按原样返回，由排序层兜底
+    days = sorted({(intervals[w][1] - intervals[w][0]).days for w in window_ids})
+    if len(days) > 1:
+        shortest = days[0]
+        window_ids = [
+            w for w in window_ids
+            if (intervals[w][1] - intervals[w][0]).days == shortest
+        ]
+    ordered = sorted(window_ids, key=lambda w: (intervals[w][0], intervals[w][1]))
+    kept: list[str] = []
+    last_end: date | None = None
+    for wid in ordered:
+        start, end = intervals[wid]
+        if last_end is None or start >= last_end:
+            kept.append(wid)
+            last_end = end
+    return kept
 
 
 def _order_temporal_windows(
@@ -81,7 +112,8 @@ def _order_temporal_windows(
         for right_id in ordered[index + 1:]:
             right = intervals[right_id]
             assert right is not None
-            if left[0] <= right[1] and right[0] <= left[1]:
+            # 相邻（end == start）不算重叠：锚点窗口允许首尾相接
+            if left[0] < right[1] and right[0] < left[1]:
                 return (
                     None,
                     f"窗口 {left_id} 与 {right_id} 时间重叠，"
@@ -95,6 +127,7 @@ async def temporal_precedence_check(
     alert_metric_code: str,
     multi_window_drift: dict[str, list[dict]] | None = None,
     metrics: list[dict] | None = None,
+    supporting_alert_codes: list[str] | None = None,
     **_kwargs,
 ) -> EvidenceItem:
     """T 类型验证器：时序优先检查。
@@ -143,7 +176,12 @@ async def temporal_precedence_check(
 
     # ── 2. 从 metrics 中提取每个窗口的性能退化 ──
     # 严格匹配触发告警对应的唯一指标，不允许 AUC/KS 混用。
-    target_code = resolve_alert_metric_code(alert_metric_code)
+    # 主告警绑定不到性能指标时（如 HIGH_FEATURE_PSI），从同候选的
+    # supporting alert codes 找排序性能告警（AUC_DROP → AUC）。
+    target_code = resolve_metric_from_supporting_alerts(
+        alert_metric_code,
+        supporting_alert_codes,
+    )
     if target_code is None:
         return EvidenceItem(
             evidence_id=str(uuid.uuid4()),
@@ -199,6 +237,31 @@ async def temporal_precedence_check(
                 "psi_windows": sorted(window_psi_max.keys()),
                 "degradation_windows": sorted(window_degradation.keys()),
                 "target_metric_code": target_code,
+            },
+        )
+
+    # 监控产出的滑动窗口（1 天步长）天然重叠：时序因果只允许用
+    # 非重叠窗口 —— 贪心选取最早开始的非重叠子集（标准锚点抽取），
+    # 再对子集做排序与峰值比较。
+    common_windows = _select_disjoint_windows(common_windows)
+    if len(common_windows) < 2:
+        return EvidenceItem(
+            evidence_id=str(uuid.uuid4()),
+            evidence_type=EvidenceType.T,
+            method_code="temporal_precedence_check",
+            executor_version="V2",
+            normalized_score=None,
+            direction=EvidenceDirection.NEUTRAL,
+            applicable=False,
+            availability_status=AvailabilityStatus.SAMPLE_TOO_SMALL,
+            confidence_level=ConfidenceLevel.LOW,
+            evidence_detail_json={
+                "message": (
+                    "滑动窗口全重叠，无法抽取 ≥2 个非重叠锚点窗口；"
+                    "本次时序证据不参与根因评分"
+                ),
+                "target_metric_code": target_code,
+                "alert_metric": alert_metric_code,
             },
         )
 

@@ -3,6 +3,7 @@
 from pydantic import Field
 
 from ..common.base import ContractModel
+from ..common.enums import TrainingMode
 
 
 class GatekeeperRule(ContractModel):
@@ -48,6 +49,9 @@ class IterationRuleConfig(ContractModel):
     missing_rates: MissingRateConfig = Field(default_factory=MissingRateConfig)
     rule_version: str
     oscillation_threshold: int = 3
+    # ── W3 确定性切分合同（严格 A7 plan_builder 消费）──
+    w3_validation_days: int = Field(default=7, ge=1, le=30)
+    w3_split_rule_version: str = "W3_LAST_7D_HOLDOUT_V1"
 
 
 class StrategyDefinition(ContractModel):
@@ -55,6 +59,9 @@ class StrategyDefinition(ContractModel):
     plan_code: str
     risk_level: str
     description: str
+    # 主训练模式：full / incremental / none —— 正式合同字段，
+    # 禁止下游从 strategy_tier 猜测训练模式
+    primary_training_mode: TrainingMode = TrainingMode.FULL_RETRAIN
     parameters: dict = Field(default_factory=dict)
 
 
@@ -72,6 +79,10 @@ class QualificationRuleConfig(ContractModel):
     required_oot_window_id: str = "W4"
     require_healthy_range: bool = True
     require_same_sample_bootstrap: bool = True
+    # 特征级 PSI 阈值：STABILITY 门参与判定（服务端配置，API 不可提交）
+    feature_psi_threshold: float = 0.25
+    # 资格阈值校准状态（A7 定稿 §10 新边初始属性同名同值）
+    threshold_status: str = "PENDING_EMPIRICAL_CALIBRATION"
 
 
 class RiskRuleConfig(ContractModel):

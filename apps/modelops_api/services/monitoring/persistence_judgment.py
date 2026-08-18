@@ -24,7 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = structlog.get_logger(__name__)
 
 # ── 核心 / 非核心指标划分 ──
-CORE_METRICS = {"AUC", "KS", "SCORE_PSI", "FEATURE_PSI", "MISSING_RATE", "OUTLIER_RATE"}
+# 核心指标 = 模型排序能力/关键性能。OUTLIER_RATE 是"数据分布/质量诊断证据"，
+# 不是自动训练链路的刹车：不参与 SEVERE 判定、不覆盖 SUSTAINED_30D
+#（它仍然保留告警与 data_quality_issue 诊断指向）。
+CORE_METRICS = {"AUC", "KS", "SCORE_PSI", "FEATURE_PSI", "MISSING_RATE"}
 GUARDRAIL_METRICS = {"SCHEMA_CONSISTENCY", "SAMPLE_SIZE"}
 
 # ── window_id 前缀 → 窗口天数 ──
@@ -78,6 +81,8 @@ class PersistenceJudgment:
 
     trigger_diagnosis: bool = False
     decay_degree: str = "NONE"  # SHORT_TERM_7D | SUSTAINED_30D | SEVERE | NONE
+    trigger_sources: list[str] = field(default_factory=list)  # "B1_PERSISTENCE" | "WP08_SENTINEL"
+    sentinel_evidence: dict | None = None  # Sentinel 独立证据
     requires_manual_review: bool = False
 
     # 窗口维度状态
@@ -140,6 +145,7 @@ class PersistenceJudgmentService:
         return PersistenceJudgment(
             trigger_diagnosis=trigger_diag,
             decay_degree=decay_degree,
+            trigger_sources=["B1_PERSISTENCE"] if trigger_diag else [],
             requires_manual_review=is_severe or (decay_degree == "SEVERE"),
             status_7d=status_7d,
             status_30d=status_30d,

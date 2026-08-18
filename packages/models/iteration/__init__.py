@@ -1,5 +1,12 @@
 """任务三共享合同。"""
 
+from .a7_contracts import (
+    A7Authorization,
+    A7DecisionEnvelope,
+    A7PrimaryRootCause,
+    AffectedSegment,
+    L1StrategyDecision,
+)
 from .data_incident import DataIncident, DerivedDataView
 from .decision_proposal import (
     DecisionInput,
@@ -21,11 +28,16 @@ from .round_control import RetryIdentity, RoundTransition
 from .training_plan import TrainingPlan, TrainingWindowSpec
 
 __all__ = [
+    "A7Authorization",
+    "A7DecisionEnvelope",
+    "A7PrimaryRootCause",
+    "AffectedSegment",
     "DataIncident",
     "DecisionInput",
     "DecisionProposal",
     "DerivedDataView",
     "FailureReport",
+    "L1StrategyDecision",
     "ManualReviewReport",
     "ManualReviewSubmission",
     "MetricComparison",

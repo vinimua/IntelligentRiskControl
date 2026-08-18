@@ -196,6 +196,26 @@ class IterationRepo:
             },
         )
 
+    async def update_iteration_run_proposal(
+        self,
+        iteration_run_id: str,
+        proposal_id: str,
+    ) -> None:
+        """第二轮复用同一 iteration_run_id：只更新当前 Proposal 引用。
+
+        不覆盖 model_id / frozen_champion_version / max_business_rounds
+        等首轮冻结信息。
+        """
+        await self.session.execute(
+            text("""
+                UPDATE iteration.iteration_runs
+                SET proposal_id = :proposal,
+                    updated_at = NOW()
+                WHERE iteration_run_id = :id
+            """),
+            {"id": iteration_run_id, "proposal": proposal_id},
+        )
+
     async def save_training_plan(self, plan: TrainingPlan) -> None:
         await self.session.execute(
             text("""

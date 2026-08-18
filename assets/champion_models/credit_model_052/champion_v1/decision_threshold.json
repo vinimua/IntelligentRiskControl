@@ -1,0 +1,9 @@
+{
+  "threshold_id": "credit_formal_rf_fullfeat_w0_threshold_v1",
+  "model_id": "credit_model_052",
+  "model_version": "champion_v1",
+  "score_field": "calibrated_pd",
+  "comparison": ">=",
+  "threshold": 0.47000000000000003,
+  "f1": 0.8192771084337349
+}

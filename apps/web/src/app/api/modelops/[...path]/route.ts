@@ -19,19 +19,31 @@ function resolveBackendUrl(request: NextRequest, path: string[]): string {
 
 async function proxy(request: NextRequest, context: RouteContext) {
   const url = resolveBackendUrl(request, context.params.path ?? []);
-  const headers = new Headers(request.headers);
+  const headers = new Headers();
+  for (const key of ["content-type", "authorization", "x-request-id", "x-trace-id"]) {
+    const value = request.headers.get(key);
+    if (value) headers.set(key, value);
+  }
 
-  headers.delete("host");
-  headers.delete("connection");
-  headers.delete("content-length");
-  headers.delete("x-modelops-api-base");
-
-  const response = await fetch(url, {
-    method: request.method,
-    headers,
-    body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.text(),
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: request.method,
+      headers,
+      body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.text(),
+      cache: "no-store",
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        success: false,
+        code: "MODEL_OPS_PROXY_ERROR",
+        message: `ModelOps API 连接失败：${url}`,
+        details: error instanceof Error ? error.message : String(error),
+      },
+      { status: 502 },
+    );
+  }
 
   const responseHeaders = new Headers(response.headers);
   responseHeaders.delete("content-encoding");

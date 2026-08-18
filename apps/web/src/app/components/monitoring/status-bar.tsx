@@ -1,12 +1,15 @@
 "use client";
 
-import type { AlertItem, CoverageSummary, MonitoringStatus } from "./monitoring-types";
+import type { AlertItem, CoverageSummary, MonitoringRun, MonitoringStatus } from "./monitoring-types";
 import { computeMonitoringStatus, STATUS_META } from "./monitoring-types";
 
 type Props = {
   summary: CoverageSummary | null;
   alerts: AlertItem[];
-  runInfo: { model_id?: string; champion_version?: string } | null;
+  runInfo: Pick<
+    MonitoringRun,
+    "model_id" | "champion_version" | "baseline_window_id" | "current_window_id" | "lifecycle_run_id" | "lifecycle_phase"
+  > | null;
 };
 
 export default function StatusBar({ summary, alerts, runInfo }: Props) {
@@ -21,12 +24,27 @@ export default function StatusBar({ summary, alerts, runInfo }: Props) {
     <div className="space-y-3">
       {/* 顶部模型信息 */}
       {runInfo && (
-        <div className="flex items-center gap-3 text-sm text-slate-600">
+        <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
           <span className="font-semibold text-slate-800">{runInfo.model_id ?? "-"}</span>
           <span className="text-slate-300">|</span>
           <span className="font-mono text-xs">{runInfo.champion_version ?? "-"}</span>
           <span className="text-slate-300">|</span>
-          <span className="text-xs text-slate-400">W0 → W3</span>
+          <span className="text-xs text-slate-400">
+            {runInfo.baseline_window_id ?? "-"} → {runInfo.current_window_id ?? "-"}
+          </span>
+          <span className="text-slate-300">|</span>
+          <span className="text-xs text-slate-500" title={runInfo.lifecycle_run_id || "未关联生命周期"}>
+            生命周期{" "}
+            <span className="font-mono text-slate-700 break-all">
+              {runInfo.lifecycle_run_id ?? "-"}
+            </span>
+          </span>
+          {runInfo.lifecycle_phase && (
+            <>
+              <span className="text-slate-300">|</span>
+              <span className="text-xs text-slate-500">{runInfo.lifecycle_phase}</span>
+            </>
+          )}
         </div>
       )}
 

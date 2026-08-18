@@ -2,10 +2,10 @@
 
 const NAV_ITEMS = [
   { section: "控制台", items: [
-    { key: "overview", icon: "◈", label: "总览" },
+    { key: "overview", icon: "◈", label: "模型定时巡检与异常回滚" },
     { key: "workflow", icon: "◎", label: "流程控制" },
     { key: "deployment", icon: "⬡", label: "部署监控" },
-    { key: "task4", icon: "▣", label: "任务四" },
+    { key: "task4", icon: "▣", label: "模型验证与灰度发布" },
   ]},
   { section: "观测", items: [
     { key: "monitoring", icon: "◉", label: "监控看板" },

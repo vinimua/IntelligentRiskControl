@@ -19,6 +19,11 @@ class FailureReport(ContractModel):
     adjustment_recommendations: list[str] = Field(default_factory=list)
     retryable: bool = False
     created_at: datetime
+    # A7 §5: 经归因确认的不稳定特征（第二轮特征筛选证据的真实来源）。
+    # 为空表示未确认任何特征级不稳定，不得授予
+    # unstable_feature_subset_confirmed / feature_selection_evidence_available。
+    unstable_feature_codes: list[str] = Field(default_factory=list)
+    feature_evidence_source: str | None = None
 
 
 class RepairCaseRecord(ContractModel):

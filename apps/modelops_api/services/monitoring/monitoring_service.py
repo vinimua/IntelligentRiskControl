@@ -190,6 +190,64 @@ class MonitoringService:
         self.calculators = METRIC_CALCULATORS
         self.rules = DEFAULT_THRESHOLD_RULES
 
+    # ── Sentinel 模型加载 ──
+
+    @staticmethod
+    def _load_sentinel_bundle(model_id: str, champion_version: str) -> SentinelBundle | None:
+        """加载已训练的 Sentinel 模型。
+
+        优先读 active.json 指针文件（只加载明确发布过的版本）。
+        active.json 不存在或指向文件缺失 → 返回 None（静默降级）。
+        """
+        import json as _json
+        import joblib
+        from pathlib import Path
+
+        model_dir = (
+            Path(__file__).resolve().parents[4]
+            / "assets" / "champion_models" / model_id / champion_version
+        )
+        active_path = model_dir / "active.json"
+        if not active_path.is_file():
+            logger.info("sentinel_active_json_not_found", path=str(active_path))
+            return None
+
+        try:
+            active = _json.loads(active_path.read_text(encoding="utf-8"))
+            artifact_rel = active.get("artifact_path", "sentinel.joblib")
+        except Exception:
+            logger.warning("sentinel_active_json_parse_failed", path=str(active_path), exc_info=True)
+            return None
+
+        # 路径安全：artifact_path 必须是相对路径，解析后必须在 model_dir 内
+        model_dir = model_dir.resolve()
+        sentinel_path = (model_dir / artifact_rel).resolve()
+        if model_dir not in sentinel_path.parents:
+            logger.warning(
+                "sentinel_artifact_path_outside_model_dir",
+                model_dir=str(model_dir), artifact=str(sentinel_path),
+            )
+            return None
+        if sentinel_path.suffix != ".joblib":
+            logger.warning(
+                "sentinel_artifact_path_invalid_suffix",
+                artifact=str(sentinel_path),
+            )
+            return None
+
+        if not sentinel_path.is_file():
+            logger.info("sentinel_model_not_found",
+                        active_path=str(active_path), artifact=str(sentinel_path))
+            return None
+        try:
+            bundle = joblib.load(sentinel_path)
+            logger.info("sentinel_model_loaded", path=str(sentinel_path),
+                        version=bundle.sentinel_version)
+            return bundle
+        except Exception:
+            logger.warning("sentinel_model_load_failed", path=str(sentinel_path), exc_info=True)
+            return None
+
     async def run(
         self,
         model_id: str,
@@ -425,9 +483,13 @@ class MonitoringService:
     ) -> None:
         """将 B1 持续性判定结果作为 PERSISTENCE_JUDGMENT 类型告警写入 monitoring_alerts。
 
-        只在 B1 触发诊断或要求人工复核时写入，不是每窗口一条，而是一条最终决策告警。
+        只在 B1 自身触发时写入（Sentinel 单独触发不产 PERSISTENT_DECAY）。
         """
         if not (judgment.trigger_diagnosis or judgment.requires_manual_review):
+            return
+        # Sentinel 单点异常 ≠ 持续性衰减，B1 必须有实际贡献才出 PERSISTENT_DECAY
+        trigger_sources = getattr(judgment, "trigger_sources", []) or []
+        if "B1_PERSISTENCE" not in trigger_sources and not judgment.requires_manual_review:
             return
 
         # decay_degree → severity
@@ -527,6 +589,9 @@ class MonitoringService:
         trace_id: str | None = None,
         window_days: int = 7,
         categorical_features: dict[str, list[str]] | None = None,
+        baseline_window_id: str = "W0",
+        current_window_id: str = "W3",
+        current_window_dfs: list[pd.DataFrame] | None = None,
     ) -> MonitoringRunResult:
         """完整 WP02-WP08 监控管道 — 与交接包 pipeline.py 行为一致。
 
@@ -545,13 +610,13 @@ class MonitoringService:
         # ── ① 创建 run 记录 ──
         run = await self.repo.create_run(
             model_id=model_id, champion_version=champion_version,
-            baseline_window_id="W0", current_window_id="W3",
+            baseline_window_id=baseline_window_id, current_window_id=current_window_id,
             data_track="NATURAL", trace_id=trace_id,
         )
         monitoring_run_id = run["monitoring_run_id"]
         logger.info("full_pipeline_started", monitoring_run_id=monitoring_run_id, model_id=model_id)
 
-        # ── WP02: W0 基线 ──
+        # ── WP02: 模型级健康基线 ──
         feature_names = [
             c for c in w0_df.columns
             if c not in ("sample_id", "apply_time", "is_bad", "y_true",
@@ -567,7 +632,8 @@ class MonitoringService:
         baseline._w0_df = w0_df
 
         # ── WP04-WP05: 滚动窗口 + 漂移 ──
-        all_data = pd.concat([w1_df, w2_df, w3_df], ignore_index=True).sort_values("apply_time")
+        current_frames = current_window_dfs or [w1_df, w2_df, w3_df]
+        all_data = pd.concat(current_frames, ignore_index=True).sort_values("apply_time")
         reference_scores = w0_df["y_pred_proba"]
 
         perf_rows: list[dict] = []
@@ -660,7 +726,9 @@ class MonitoringService:
 
         w0_schema_cols = set(w0_df.columns) - {"y_pred_proba", "risk_score"}
         w3_schema_cols = set(w3_df.columns) - {"y_pred_proba", "risk_score"}
-        schema_inconsistent_value = 1.0 if (w0_schema_cols - w3_schema_cols or w3_schema_cols - w0_schema_cols) else 0.0
+        schema_missing_cols = sorted(w0_schema_cols - w3_schema_cols)
+        schema_extra_cols = sorted(w3_schema_cols - w0_schema_cols)
+        schema_inconsistent_value = 1.0 if (schema_missing_cols or schema_extra_cols) else 0.0
 
         async def _persist_event_metric(
             metric_code: str,
@@ -748,7 +816,9 @@ class MonitoringService:
             )
             await _persist_event_metric(
                 "SCHEMA_CONSISTENCY", schema_inconsistent_value, None, None,
-                {**window_detail, "category": "guardrail"},
+                {**window_detail, "category": "guardrail",
+                 "missing_columns": schema_missing_cols,
+                 "extra_columns": schema_extra_cols},
             )
 
             wid = row["monitor_window_id"]
@@ -793,16 +863,42 @@ class MonitoringService:
                         None,
                         {**window_detail, "category": "quality", "source": "qual_df_window_max"},
                     )
-            if not window_qual.empty and "outlier_rate" in window_qual.columns:
-                out_vals = window_qual["outlier_rate"].dropna()
-                if len(out_vals) > 0:
-                    await _persist_event_metric(
-                        "OUTLIER_RATE",
-                        float(out_vals.max()),
-                        None,
-                        None,
-                        {**window_detail, "category": "quality", "source": "qual_df_window_max"},
-                    )
+            if not window_qual.empty:
+                # OUTLIER_RATE = MAX_POSITIVE_DELTA_VS_W0（相对冻结 W0 基线的正向增量）
+                if "outlier_rate_delta" in window_qual.columns:
+                    out_delta = window_qual["outlier_rate_delta"].dropna()
+                    if len(out_delta) > 0:
+                        max_delta = max(0.0, float(out_delta.max()))
+                        # 定位最大差值行，读取 current_rate 和 baseline_rate
+                        idx = out_delta.idxmax() if len(out_delta) > 0 else out_delta.index[0]
+                        cur_rate = float(window_qual.loc[idx, "outlier_rate"]) if "outlier_rate" in window_qual.columns and idx in window_qual.index else None
+                        baseline_rate = (cur_rate - max_delta) if cur_rate is not None else 0.0
+                        await _persist_event_metric(
+                            "OUTLIER_RATE",
+                            max_delta,
+                            baseline_rate,
+                            max_delta,
+                            {
+                                **window_detail, "category": "quality",
+                                "source": "qual_df_max_positive_delta_vs_w0",
+                                "feature_name": str(window_qual.loc[idx, "feature_name"]) if "feature_name" in window_qual.columns and idx in window_qual.index else "",
+                                "current_rate": round(cur_rate, 6) if cur_rate is not None else None,
+                                "baseline_rate": round(baseline_rate, 6),
+                                "positive_delta": round(max_delta, 6),
+                                "baseline_type": "W0_FROZEN",
+                            },
+                        )
+                elif "outlier_rate" in window_qual.columns:
+                    # 无 delta 列时回退绝对值（旧数据兼容）
+                    out_vals = window_qual["outlier_rate"].dropna()
+                    if len(out_vals) > 0:
+                        await _persist_event_metric(
+                            "OUTLIER_RATE",
+                            float(out_vals.max()),
+                            None,
+                            None,
+                            {**window_detail, "category": "quality", "source": "qual_df_window_max"},
+                        )
 
         await self.repo.batch_insert_feature_drift(
             monitoring_run_id,
@@ -839,9 +935,67 @@ class MonitoringService:
 
         detector_df = run_detectors(features_input)
 
-        # ── WP08: Sentinel 特征向量 ──
+        # ── WP08: Sentinel 特征向量 + 推理 ──
         feature_df = build_monitor_feature_vector(perf_df, qual_df, drift_df, detector_df)
         feature_df = select_canonical_sentinel_rows(feature_df)
+
+        # ── Sentinel 推理 + 五种状态 ──
+        sentinel_results: pd.DataFrame | None = None
+        sentinel_status: str = "NOT_PUBLISHED"
+        sentinel_peak: pd.Series | None = None
+        sentinel_triggered: bool = False
+        sentinel_bundle = self._load_sentinel_bundle(model_id, champion_version)
+
+        if sentinel_bundle is None:
+            sentinel_status = "NOT_PUBLISHED"
+        elif feature_df.empty:
+            sentinel_status = "NO_FEATURE_ROWS"
+        else:
+            # Schema hash 校验（列名 + 顺序 + 内容一致性）
+            from .sentinel.feature_schema import compute_schema_hash
+            current_hash = compute_schema_hash()
+            bundle_hash = getattr(sentinel_bundle, "feature_schema_hash", "")
+            if bundle_hash and bundle_hash != current_hash:
+                sentinel_status = "SCHEMA_MISMATCH"
+                logger.error(
+                    "sentinel_schema_hash_mismatch",
+                    bundle_version=sentinel_bundle.sentinel_version,
+                    bundle_hash=bundle_hash, current_hash=current_hash,
+                )
+            else:
+                # 列名校验（兜底）
+                expected = list(sentinel_bundle.features)
+                actual = set(feature_df.columns)
+                missing_cols = [f for f in expected if f not in actual]
+                if missing_cols:
+                    sentinel_status = "SCHEMA_MISMATCH"
+                    logger.error(
+                        "sentinel_feature_schema_mismatch",
+                        sentinel_version=sentinel_bundle.sentinel_version,
+                        missing_features=missing_cols,
+                    )
+                else:
+                    try:
+                        # 传完整 DataFrame，infer_sentinel 内部自己选列
+                        sentinel_results = infer_sentinel(sentinel_bundle, feature_df)
+                        sentinel_status = "ACTIVE"
+                        logger.info(
+                            "sentinel_inference_complete",
+                            window_count=len(sentinel_results),
+                            max_prob=float(sentinel_results["anomaly_probability"].max()),
+                        )
+                    except Exception:
+                        sentinel_status = "INFERENCE_FAILED"
+                        logger.warning("sentinel_inference_failed", exc_info=True)
+
+        # 无条件取最大概率窗口（触发或未触发都记录）
+        if sentinel_results is not None and not sentinel_results.empty:
+            max_idx = sentinel_results["anomaly_probability"].idxmax()
+            sentinel_peak = sentinel_results.loc[max_idx]
+            threshold = sentinel_bundle.threshold if sentinel_bundle else 0.5
+            sentinel_triggered = bool(
+                sentinel_peak["anomaly_probability"] >= threshold
+            )
 
         # ── 趋势斜率 ──
         if len(perf_df) >= 5:
@@ -928,7 +1082,9 @@ class MonitoringService:
         mid = await _persist_summary_metric(mr, triggered=False)
         await self._emit_alert(monitoring_run_id, mid, mr, self.rules.get("SAMPLE_SIZE"), triggered_alerts)
 
-        mr = MetricResult(metric_code="SCHEMA_CONSISTENCY", current_value=schema_inconsistent_value)
+        mr = MetricResult(metric_code="SCHEMA_CONSISTENCY", current_value=schema_inconsistent_value,
+                          metric_detail={"missing_columns": schema_missing_cols,
+                                         "extra_columns": schema_extra_cols})
         mid = await _persist_summary_metric(mr, triggered=False)
         await self._emit_alert(monitoring_run_id, mid, mr, self.rules.get("SCHEMA_CONSISTENCY"), triggered_alerts)
 
@@ -940,11 +1096,23 @@ class MonitoringService:
         mid = await _persist_summary_metric(mr, triggered=False)
         await self._emit_alert(monitoring_run_id, mid, mr, self.rules.get("MISSING_RATE"), triggered_alerts)
 
-        max_outlier = 0.0
+        # OUTLIER_RATE = MAX_POSITIVE_DELTA_VS_W0（相对冻结 W0 基线的最大正向增量）
+        max_outlier_delta = 0.0
+        baseline_outlier = 0.0
+        current_outlier = 0.0
+        if not qual_df.empty and "outlier_rate_delta" in qual_df.columns:
+            max_outlier_delta = max(0.0, float(qual_df["outlier_rate_delta"].max()))
         if not qual_df.empty and "outlier_rate" in qual_df.columns:
-            max_outlier = float(qual_df["outlier_rate"].max())
-        mr = MetricResult(metric_code="OUTLIER_RATE", current_value=max_outlier,
-                          metric_detail={"source": "qual_df_max", "window_count": len(perf_df)})
+            current_outlier = float(qual_df["outlier_rate"].max())
+        mr = MetricResult(metric_code="OUTLIER_RATE", current_value=max_outlier_delta,
+                          metric_detail={
+                              "source": "qual_df_max_positive_delta",
+                              "window_count": len(perf_df),
+                              "current_rate": round(current_outlier, 6),
+                              "baseline_rate": round(baseline_outlier, 6),
+                              "positive_delta": round(max_outlier_delta, 6),
+                              "baseline_type": "W0_FROZEN",
+                          })
         mid = await _persist_summary_metric(mr, triggered=False)
         await self._emit_alert(monitoring_run_id, mid, mr, self.rules.get("OUTLIER_RATE"), triggered_alerts)
 
@@ -979,6 +1147,82 @@ class MonitoringService:
         from .persistence_judgment import PersistenceJudgmentService
         judgment_svc = PersistenceJudgmentService(self.session)
         judgment = await judgment_svc.judge(monitoring_run_id)
+        # 所有状态统一写 evidence（区分"正常推理"/"不可用"/"未发布"等）
+        if not sentinel_triggered:
+            judgment.sentinel_evidence = {
+                "source": "WP08_SENTINEL",
+                "sentinel_status": sentinel_status,
+                "triggered": False,
+                "anomaly_probability": (
+                    float(sentinel_peak["anomaly_probability"])
+                    if sentinel_peak is not None else None
+                ),
+                "alert_threshold": (
+                    float(sentinel_bundle.threshold)
+                    if sentinel_bundle is not None else None
+                ),
+                "monitor_window_id": (
+                    str(sentinel_peak.get("monitor_window_id", ""))
+                    if sentinel_peak is not None else None
+                ),
+                "sentinel_version": (
+                    sentinel_bundle.sentinel_version
+                    if sentinel_bundle is not None else None
+                ),
+                "top_signals": (
+                    list(sentinel_peak.get("top_signals", []))
+                    if sentinel_peak is not None else []
+                ),
+            }
+
+        if sentinel_triggered and sentinel_peak is not None:
+            judgment.trigger_diagnosis = True
+            judgment.trigger_sources.append("WP08_SENTINEL")
+            # 不强制修改 decay_degree，Sentinel 单点异常不代表持续衰减
+            sentinel_evidence = {
+                "source": "WP08_SENTINEL",
+                "sentinel_status": sentinel_status,
+                "triggered": True,
+                "anomaly_probability": float(sentinel_peak["anomaly_probability"]),
+                "alert_threshold": (
+                    sentinel_bundle.threshold if sentinel_bundle else 0.5
+                ),
+                "monitor_window_id": str(sentinel_peak.get("monitor_window_id", "")),
+                "sentinel_version": (
+                    sentinel_bundle.sentinel_version if sentinel_bundle else None
+                ),
+                "top_signals": list(sentinel_peak.get("top_signals", [])),
+            }
+            judgment.sentinel_evidence = sentinel_evidence
+            judgment.persistence_evidence.append(sentinel_evidence)
+            triggered_alerts.append(AlertDetail(
+                alert_id=str(uuid.uuid4()),
+                alert_code="SENTINEL_ANOMALY",
+                severity=Severity.WARNING,
+                object_type=ObjectType.MODEL,
+                object_code=model_id,
+                metric_code="SENTINEL_ANOMALY_PROBABILITY",
+                metric_version="WP08",
+                baseline_value=None,
+                current_value=float(sentinel_peak["anomaly_probability"]),
+                delta=None,
+                threshold=float(sentinel_bundle.threshold) if sentinel_bundle else 0.5,
+                rule_type=RuleType.SHIFT_THRESHOLD,
+                threshold_rule_id="WP08_SENTINEL_V1",
+                threshold_rule_version="V1",
+                availability_status=AvailabilityStatus.AVAILABLE,
+                metric_detail=sentinel_evidence,
+                created_at=datetime.now(timezone.utc),
+            ))
+            # 持久化 Sentinel 独立告警到 monitoring_alerts
+            sentinel_mr = MetricResult(
+                metric_code="SENTINEL_ANOMALY_PROBABILITY",
+                current_value=float(sentinel_peak["anomaly_probability"]),
+                metric_detail=sentinel_evidence,
+            )
+            sentinel_mid = await self._persist_metric(monitoring_run_id, sentinel_mr, triggered=True)
+            await self._persist_alert(monitoring_run_id, sentinel_mid, sentinel_mr,
+                                      triggered_alerts[-1])
         diagnosis_status = "PENDING" if judgment.trigger_diagnosis else "SKIPPED"
         await self.repo.update_persistence_judgment(
             monitoring_run_id, judgment.__dict__, diagnosis_status,
@@ -1004,8 +1248,16 @@ class MonitoringService:
             model_id=model_id, model_version=champion_version,
             monitor_window_id="W3", baseline_id=baseline.baseline_id,
             data_track=DataTrack.NATURAL,
-            anomaly_probability=None,  # 需要已训练的 Sentinel 模型
-            top_signals=[],
+            anomaly_probability=(
+                float(sentinel_peak["anomaly_probability"])
+                if sentinel_peak is not None
+                else None
+            ),
+            top_signals=(
+                list(sentinel_peak.get("top_signals", []))
+                if sentinel_peak is not None
+                else []
+            ),
             alert_details=triggered_alerts,
         )
 

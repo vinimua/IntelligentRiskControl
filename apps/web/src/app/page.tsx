@@ -4,7 +4,6 @@ import type { FormEvent, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import Shell from "./components/shell";
 import Sidebar from "./components/sidebar";
-import DashboardOverview from "./components/dashboard-overview";
 import DeploymentPanel from "./components/deployment-panel";
 import DeploymentKgDecisionPanel from "./components/deployment-kg-decision-panel";
 import TaskFourPanel from "./components/task-four-panel";
@@ -65,6 +64,7 @@ type DecisionProposalDetail = {
     rationale?: string;
   }>;
   selected_strategy_code?: string | null;
+  strategy_source?: string | null;
   decision_reasons?: string[];
   requires_manual_review?: boolean;
   confidence?: string;
@@ -106,6 +106,27 @@ const actionMeta: Record<string,{label:string;desc:string}> = {
   MODEL_ITERATION:{label:"模型迭代",desc:"训练challenger"},MANUAL_REVIEW:{label:"人工判断",desc:"需人工定夺"},
 };
 function describePhase(v?: string|null) { const k = v||"NO_RUN"; return phaseMeta[k]??{label:k,desc:""}; }
+const exitReasonMeta: Record<string,{label:string;desc:string}> = {
+  MAX_BUSINESS_ROUNDS_REACHED:{label:"轮次上限停止",desc:"已达最大业务轮次（2），自动迭代按定稿结束"},
+  TECHNICAL_FAILURE:{label:"技术失败",desc:"训练/执行环节技术异常，需人工排查"},
+  REPAIR_REPLAY_QUALIFICATION_FAILED:{label:"修复资格未通过",desc:"修复回放未恢复性能，停止自动迭代"},
+  ADJUSTMENT_QUALIFICATION_FAILED:{label:"调整资格未通过",desc:"校准/阈值调整未通过资格验证"},
+  ADJUSTMENT_EXECUTION_RESULT_MISSING:{label:"调整无执行证据",desc:"缺少调整执行产物，禁止假通过"},
+  REPAIR_DISPATCH_FAILED:{label:"修复派发失败",desc:"外部执行器与 Celery 均不可用"},
+  DRIFT_WITHOUT_RANKING_PERFORMANCE_LOSS:{label:"漂移未致退化",desc:"仅分布漂移、排序未退化，继续观察"},
+  SHORT_TERM_7D_OBSERVE_ONLY_NOT_A7:{label:"短期波动观察",desc:"7D 短期告警，按定稿不自动训练"},
+  SEVERE_REQUIRES_MANUAL_REVIEW:{label:"严重衰减需人工",desc:"SEVERE 等级强制人工复核"},
+  NO_MODEL_TRAINING_REQUIRED:{label:"无需训练",desc:"观察结束，事件关闭"},
+  REPAIR_CALLBACK_CONTRACT_INVALID:{label:"修复回调合同无效",desc:"回调缺 status 字段，按失败处理"},
+  REPAIR_WORKER_FAILED:{label:"修复执行失败",desc:"修复 Worker 执行失败"},
+  QUALIFICATION_REPORT_NOT_FOUND:{label:"资格报告缺失",desc:"第二轮未产出资格报告，按轮次上限收尾"},
+};
+function describeExitReason(v?: string, phase?: string) {
+  const meta = exitReasonMeta[String(v||"")];
+  if (meta) return meta;
+  const pm = (phase&&phaseMeta[phase])??phaseMeta.FAILED;
+  return v ? {label:`${pm.label}（${v}）`,desc:pm.desc} : pm;
+}
 function describeAction(v?: string|null) { const k = v||""; return actionMeta[k]??{label:k||"暂无",desc:""}; }
 function formatRootCause(v?: string) { const m: Record<string,string>={FEATURE_DRIFT:"特征漂移",LABEL_DRIFT:"标签漂移",DATA_QUALITY:"数据质量异常",PERFORMANCE_DROP:"模型效果下降"}; return v?`${m[v]||v} (${v})`:"-"; }
 function formatRiskLevel(v?: string) { const m: Record<string,string>={LOW:"低风险",MEDIUM:"中风险",HIGH:"高风险"}; return v?`${m[v]||v} (${v})`:"-"; }
@@ -140,7 +161,10 @@ export default function Page() {
   const state = useMemo(() => lifecycleRun?.state??{}, [lifecycleRun]);
   const currentRunId = runId || lifecycleRun?.lifecycle_run_id || "";
   const currentPhase = lifecycleRun?.current_phase || String(state.current_phase||"NO_RUN");
-  const currentPhaseMeta = describePhase(currentPhase);
+  const exitReason = String(state.iteration_exit_reason||"");
+  const currentPhaseMeta = (terminalPhases.has(currentPhase)&&exitReason)
+    ? describeExitReason(exitReason,currentPhase)
+    : describePhase(currentPhase);
   const currentAction = String(state.recommended_action||"");
   const currentActionMeta = describeAction(currentAction);
   const currentTrainingPlanId = String(state.training_plan_id||"");
@@ -166,7 +190,7 @@ export default function Page() {
   async function startLifecycle(e?:FormEvent<HTMLFormElement>){e?.preventDefault();const d=await runAction("start",()=>requestJson<LifecycleRun>(apiBase,"/api/lifecycle-runs?wait=false",{method:"POST",body:JSON.stringify({model_id:modelId,champion_version:championVersion,trigger_type:triggerType})}),"生命周期已启动，后台监控正在运行。");if(d){setLifecycleRun(d);setRunId(d.lifecycle_run_id);setTrainingPlan(null);setActiveNav("workflow");}}
   async function resumeLifecycle(payload:Record<string,unknown>,key:string){if(!currentRunId){setMessage({type:"error",text:"请先启动或加载生命周期"});return null;}const d=await runAction(key,()=>requestJson<LifecycleRun>(apiBase,`/api/lifecycle-runs/${currentRunId}/resume`,{method:"POST",body:JSON.stringify(payload)}),"生命周期已恢复。");if(d){setLifecycleRun(d);setRunId(d.lifecycle_run_id);}return d;}
   async function submitManualReview(decision:"APPROVE"|"REJECT"){if(!currentRunId||!decisionProposalId){setMessage({type:"error",text:"当前无复核建议"});return;}const ok=decision==="APPROVE";const reason=reviewReason.trim()||(ok?"人工确认通过。":"人工确认拒绝。");const report=await runAction(ok?"approve":"reject",()=>requestJson<{review_id:string}>(apiBase,`/api/iteration/decisions/${decisionProposalId}/reviews`,{method:"POST",body:JSON.stringify({proposal_id:decisionProposalId,reviewer_id:reviewerId.trim()||"admin",decision,reason,rejection_reason_codes:ok?[]:["MANUAL_REJECTED"],adjustment_instructions:ok?[]:["请重新生成修复建议"],forbidden_adjustments:[],expected_evidence:[],reviewed_at:new Date().toISOString()})}),ok?"复核已通过":"复核已拒绝");if(!report)return;await resumeLifecycle({decision:ok?"approved":"rejected",manual_review_id:report.review_id,review_id:report.review_id},ok?"approve":"reject");}
-  async function submitTrainingCallback(){if(!currentRunId||!trainingJobId){setMessage({type:"error",text:"缺少训练任务ID"});return;}const st=callbackStatus.trim()||"SUCCEEDED";const cv=candidateVersion.trim()||String(state.challenger_version||`${state.champion_version||"champion"}_challenger_v1`);const cb=await runAction("callback",()=>requestJson<{callback_applied:boolean}>(apiBase,`/api/internal/iteration/jobs/${trainingJobId}/callback`,{method:"POST",body:JSON.stringify({training_job_id:trainingJobId,lifecycle_run_id:currentRunId,idempotency_key:`${String(state.iteration_run_id||"iter")}:round-${businessRound}:exp-${currentExperimentId}`,experiment_id:currentExperimentId,status:st,candidate_version:cv,model_artifact_uri:st==="SUCCEEDED"?`s3://riskitem/demo/models/${cv}`:undefined,training_metrics:{auc:0.81,ks:0.43},validation_metrics:{original_drop:0.04,recovered_amount:0.035,recovery_rate:0.875,champion_auc:0.74,challenger_auc:0.775,healthy_lower_bound:0.76,score_psi:0.08,train_valid_gap:0.015,discrimination_passed:true,calibration_passed:true,oot_passed:true},segment_metrics:{segment_governance_passed:true},artifact_checksums:{},environment_manifest:{runtime:"frontend-manual"},technical_retry_count:0})}),"手动回调已提交");if(cb)await loadLifecycleRun(currentRunId,false);}
+  async function submitTrainingCallback(){if(!currentRunId||!trainingJobId){setMessage({type:"error",text:"缺少训练任务ID"});return;}const st=callbackStatus.trim()||"SUCCEEDED";const cv=candidateVersion.trim()||String(state.challenger_version||`${state.champion_version||"champion"}_challenger_v1`);const cb=await runAction("callback",()=>requestJson<{callback_applied:boolean}>(apiBase,`/api/internal/iteration/jobs/${trainingJobId}/callback`,{method:"POST",body:JSON.stringify({training_job_id:trainingJobId,lifecycle_run_id:currentRunId,idempotency_key:`${String(state.iteration_run_id||"iter")}:round-${businessRound}:exp-${currentExperimentId}`,experiment_id:currentExperimentId,status:st,candidate_version:cv,model_artifact_uri:st==="SUCCEEDED"?`s3://riskitem/demo/models/${cv}`:undefined,training_metrics:{auc:0.81,ks:0.43},validation_metrics:{original_drop:0.04,recovered_amount:0.035,recovery_rate:0.875,recovery_auc:0.8,recovery_ks:0.65,champion_auc:0.74,challenger_auc:0.775,champion_ks:0.3,challenger_ks:0.34,healthy_lower_bound:0.76,ks_healthy_lower_bound:0.15,bootstrap_ci_lower:0.03,bootstrap_ci_upper:0.1,ks_bootstrap_ci_lower:0.02,ks_bootstrap_ci_upper:0.08,score_psi:0.08,train_valid_gap:0.015,discrimination_passed:true,calibration_passed:true},segment_metrics:{segment_governance_passed:true},data_reproducible:true,candidate_frozen_before_oot:true,artifact_checksums:{},environment_manifest:{runtime:"frontend-manual"},technical_retry_count:0})}),"手动回调已提交");if(cb)await loadLifecycleRun(currentRunId,false);}
   const primaryAction = (()=>{const p=currentPhase;if(!p||p==="NO_RUN")return"启动生命周期";if(p==="DECISION_PROPOSED"&&decisionProposalId)return"通过人工复核";if(p==="WAITING_FEATURE_RECONSTRUCTION")return"等待特征重构完成";if(p==="WAITING_TRAINING_CALLBACK")return state.training_callback_status==="SUCCEEDED"?"训练已回调，刷新闭环状态":"Worker 训练中，必要时可手动兜底回调";if(p==="EVENT_CLOSED")return"流程已闭环";return"刷新状态";})();
 
   // ── Topbar ──
@@ -180,7 +204,13 @@ export default function Page() {
       </label>
       <Btn onClick={testApi} disabled={busy==="health"}>测试后端</Btn>
       <a className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 transition" href={`${apiBase}/docs`} target="_blank">API 文档</a>
-      {currentRunId && <Btn onClick={()=>{loadLifecycleRun();setActiveNav("workflow");}} disabled={busy==="load-run"}>刷新流程</Btn>}
+      <input
+        className="w-72 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 font-mono text-[10px] focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition"
+        placeholder="lifecycle_run_id"
+        value={runId}
+        onChange={e=>setRunId(e.target.value)}
+      />
+      <Btn onClick={()=>{loadLifecycleRun();setActiveNav("workflow");}} disabled={!runId||busy==="load-run"}>{currentRunId?"刷新流程":"加载流程"}</Btn>
     </>
   );
 
@@ -196,9 +226,9 @@ export default function Page() {
         </div>
       )}
 
-      {activeNav==="overview" && <DashboardOverview apiBase={apiBase} onNav={setActiveNav} />}
+      {activeNav==="overview" && <TaskFourPanel apiBase={apiBase} initialModelId={modelId} view="patrol" />}
       {activeNav==="deployment" && <DeploymentPanel apiBase={apiBase} />}
-      {activeNav==="task4" && <TaskFourPanel apiBase={apiBase} initialModelId={modelId} />}
+      {activeNav==="task4" && <TaskFourPanel apiBase={apiBase} initialModelId={modelId} view="full" />}
       {activeNav==="kg" && <KgCalibrationPanel apiBase={apiBase} />}
 
       {activeNav==="workflow" && (
@@ -430,11 +460,33 @@ function KgDecisionCardV2({state,proposalId,apiBase}:{state:Record<string,unknow
   const reasons = proposal?.decision_reasons?.length ? proposal.decision_reasons : stateReasons;
   const strategy = String(proposal?.selected_strategy_code || state.selected_strategy_code || proposal?.strategies?.[0]?.strategy_code || "");
   const kgStrategy = reasons.find((r) => r.startsWith("KG_STRATEGY:"))?.replace("KG_STRATEGY:", "") ?? "";
-  const kgEffectiveness = reasons.find((r) => r.startsWith("HISTORICAL_EFFECTIVENESS:"))?.replace("HISTORICAL_EFFECTIVENESS:", "") ?? "";
-  const kgCases = reasons.find((r) => r.startsWith("SUPPORT_CASES:"))?.replace("SUPPORT_CASES:", "") ?? "";
-  const kgRelation = reasons.find((r) => r.startsWith("RELATION:"))?.replace("RELATION:", "") ?? "";
+  const kgEffectiveness =
+    reasons.find((r) => r.startsWith("HISTORICAL_EFFECTIVENESS:"))?.replace("HISTORICAL_EFFECTIVENESS:", "") ??
+    reasons.find((r) => r.startsWith("KG_RANK_SCORE:"))?.replace("KG_RANK_SCORE:", "") ??
+    "";
+  const kgCases =
+    reasons.find((r) => r.startsWith("SUPPORT_CASES:"))?.replace("SUPPORT_CASES:", "") ??
+    reasons.find((r) => r.startsWith("KG_SUPPORT_CASES:"))?.replace("KG_SUPPORT_CASES:", "") ??
+    "";
+  const kgRelation =
+    reasons.find((r) => r.startsWith("RELATION:"))?.replace("RELATION:", "") ??
+    reasons.find((r) => r.startsWith("KG_RELATION:"))?.replace("KG_RELATION:", "") ??
+    "";
   const kgDegraded = reasons.includes("KG_RETRIEVAL_DEGRADED");
-  const isYamlFallback = reasons.some((r) => r.startsWith("ROOT_CAUSE_RULE_MATCHED:"));
+  const kgConsistency = reasons.find((r) => r.startsWith("KG_CONSISTENCY:"))?.replace("KG_CONSISTENCY:", "") ?? "";
+  const consistencyMeta: Record<string,{t:string;c:string}> = {
+    KG_AGREES:{t:"KG 与规则门禁一致",c:"bg-emerald-50 text-emerald-700 border-emerald-200"},
+    KG_SELECTED_L1_VALIDATED:{t:"KG 选中策略，L1 门禁校验通过",c:"bg-emerald-50 text-emerald-700 border-emerald-200"},
+    KG_TOP_BLOCKED_L1_SELECTED_NEXT:{t:"KG 首选被门禁拦截，采用下一可执行候选",c:"bg-amber-50 text-amber-700 border-amber-200"},
+    KG_RANK_DIVERGES:{t:"KG 排名与规则候选分歧，按门禁后的 KG 候选执行",c:"bg-amber-50 text-amber-700 border-amber-200"},
+    KG_L1_CANDIDATE_MISSING:{t:"规则候选不在 KG 候选中（需修复图谱）",c:"bg-amber-50 text-amber-700 border-amber-200"},
+    KG_NO_CANDIDATES:{t:"KG 无候选，转人工复核",c:"bg-slate-50 text-slate-600 border-slate-200"},
+    KG_MITIGATES_MISSING:{t:"缺 MITIGATES 反向边（需修复图谱）",c:"bg-amber-50 text-amber-700 border-amber-200"},
+    KG_UNAVAILABLE:{t:"KG 降级（Neo4j 不可用），转人工复核",c:"bg-slate-50 text-slate-600 border-slate-200"},
+  };
+  const strategySource = String(proposal?.strategy_source || state.strategy_source || "");
+  const isKgSelected = strategySource === "KG_WITH_L1_GUARDRAILS" || reasons.some((r) => r.startsWith("KG_STRATEGY:"));
+  const isYamlFallback = !isKgSelected && reasons.some((r) => r.startsWith("ROOT_CAUSE_RULE_MATCHED:"));
   const hasKG = Boolean(kgStrategy);
   const autoPassed = !(proposal?.requires_manual_review ?? state.requires_manual_review) && hasKG;
   const proposalUrl = proposalId ? `${apiBase.replace(/\/+$/,"")}/api/iteration/decisions/${proposalId}` : "";
@@ -455,11 +507,16 @@ function KgDecisionCardV2({state,proposalId,apiBase}:{state:Record<string,unknow
         ) : isYamlFallback ? (
           <div className="space-y-3">
             <div className="rounded-lg bg-slate-50 border border-slate-100 p-3 text-xs text-slate-600">
-              <div className="font-semibold text-slate-800">当前没有命中 KG 策略，已使用本地规则兜底</div>
+              <div className="font-semibold text-slate-800">规则兜底命中（KG 未参与最终选择）</div>
               <div className="mt-1">根因：{formatValue(proposal?.primary_root_cause_code || state.primary_root_cause_code)}</div>
               <div>采用策略：{strategy || "-"}</div>
               <div>动作：{formatValue(proposal?.action || state.recommended_action)}</div>
             </div>
+            {kgConsistency ? (
+              <div className={`rounded-lg border px-3 py-2 text-xs font-semibold ${(consistencyMeta[kgConsistency] ?? {t:kgConsistency,c:"bg-slate-50 text-slate-600 border-slate-200"}).c}`}>
+                {(consistencyMeta[kgConsistency] ?? {t:kgConsistency}).t}
+              </div>
+            ) : null}
             {proposal?.strategies?.[0]?.rationale ? (
               <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">
                 策略说明：{proposal.strategies[0].rationale}
@@ -472,9 +529,10 @@ function KgDecisionCardV2({state,proposalId,apiBase}:{state:Record<string,unknow
           </div>
         ) : hasKG ? (
           <div className="space-y-2">
-            <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3">
-              <div className="text-[10px] text-indigo-400 font-mono mb-1">MATCH (RootCause)-[:RECOMMENDS]-&gt;(Strategy)-[:MITIGATES]-&gt;(RootCause)</div>
-              <div className="text-xs text-indigo-600 font-mono">RootCause: {kgRelation.split("|")[0] || formatValue(proposal?.primary_root_cause_code || state.primary_root_cause_code)}</div>
+              <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3">
+                <div className="text-[10px] text-indigo-400 font-mono mb-1">MATCH (RootCause)-[:RECOMMENDS]-&gt;(Strategy)-[:MITIGATES]-&gt;(RootCause)</div>
+                <div className="font-semibold text-indigo-800">KG 策略选择（L1 门禁校验）</div>
+                <div className="text-xs text-indigo-600 font-mono">RootCause: {kgRelation.split("|")[0] || formatValue(proposal?.primary_root_cause_code || state.primary_root_cause_code)}</div>
               <div className="grid grid-cols-2 gap-2 mt-2">
                 {[
                   ["策略", kgStrategy],
@@ -508,7 +566,16 @@ function KgDecisionCardV2({state,proposalId,apiBase}:{state:Record<string,unknow
   );
 }
 
-function KgDecisionCard({state,proposalId}:{state:Record<string,unknown>;proposalId?:string}){const reasons: string[]=Array.isArray(state.decision_reasons)?state.decision_reasons as string[]:[];const strategy=(state.selected_strategy_code??"")as string;const kgStrategy=reasons.find(r=>r.startsWith("KG_STRATEGY:"))?.replace("KG_STRATEGY:","")??"";const kgEffectiveness=reasons.find(r=>r.startsWith("HISTORICAL_EFFECTIVENESS:"))?.replace("HISTORICAL_EFFECTIVENESS:","")??"";const kgCases=reasons.find(r=>r.startsWith("SUPPORT_CASES:"))?.replace("SUPPORT_CASES:","")??"";const kgRelation=reasons.find(r=>r.startsWith("RELATION:"))?.replace("RELATION:","")??"";const kgDegraded=reasons.includes("KG_RETRIEVAL_DEGRADED");const isYamlFallback=reasons.some(r=>r.startsWith("ROOT_CAUSE_RULE_MATCHED:"));const hasKG=Boolean(kgStrategy);const autoPassed=!state.requires_manual_review&&hasKG;return(<div className="dash-card"><div className="dash-card-header flex items-center justify-between">KG Strategy Decision{proposalId?<a href={`${DEFAULT_API_BASE}/api/iteration/decisions/${proposalId}`} target="_blank" className="text-xs text-indigo-500 hover:underline">Proposal</a>:null}</div><div className="dash-card-body">{isYamlFallback?<div className="rounded-lg bg-slate-50 border border-slate-100 p-3 text-xs text-slate-600">YAML 规则匹配 (无 KG 命中)<br/>策略: {strategy||"—"}</div>:kgDegraded?<div className="rounded-lg bg-amber-50 border border-amber-100 p-3 text-xs text-amber-700">KG 检索降级 — Neo4j 不可用，需人工复核</div>:hasKG?<div className="space-y-2"><div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3"><div className="text-[10px] text-indigo-400 font-mono mb-1">MATCH (rc)→[:RECOMMENDS]→(s)→[:MITIGATES]→(rc)</div><div className="text-xs text-indigo-600 font-mono">RootCause: {kgRelation.split("|")[0]||"?"}</div><div className="grid grid-cols-2 gap-2 mt-2">{[["Strategy",kgStrategy],["Effectiveness",kgEffectiveness?String(Number(kgEffectiveness).toFixed(3)):"?"],["Support Cases",kgCases||"?"],["Decision",autoPassed?"AUTO":"REVIEW"]].map(([l,v])=>(<div key={l} className="bg-white/60 rounded p-2"><div className="text-[10px] text-indigo-400">{l}</div><div className={`text-sm font-bold ${l==="Decision"?(autoPassed?"text-emerald-700":"text-amber-700"):"text-indigo-800"}`}>{v}</div></div>))}</div></div></div>:<p className="text-xs text-slate-400 py-4 text-center">暂无 KG 决策数据。启动 lifecycle 后显示。</p>}{reasons.length>0&&(<details className="mt-3"><summary className="text-[10px] text-slate-400 cursor-pointer hover:text-slate-600">全部理由 ({reasons.length})</summary><div className="mt-1 space-y-0.5 max-h-32 overflow-auto">{reasons.map((r,i)=><div key={i} className="text-[10px] font-mono text-slate-500 bg-slate-50 rounded px-1.5 py-0.5">{r}</div>)}</div></details>)}</div></div>);}
+function KgDecisionCard({state,proposalId}:{state:Record<string,unknown>;proposalId?:string}){const reasons: string[]=Array.isArray(state.decision_reasons)?state.decision_reasons as string[]:[];const strategy=(state.selected_strategy_code??"")as string;const kgStrategy=reasons.find(r=>r.startsWith("KG_STRATEGY:"))?.replace("KG_STRATEGY:","")??"";const kgEffectiveness=reasons.find(r=>r.startsWith("HISTORICAL_EFFECTIVENESS:"))?.replace("HISTORICAL_EFFECTIVENESS:","")??"";const kgCases=reasons.find(r=>r.startsWith("SUPPORT_CASES:"))?.replace("SUPPORT_CASES:","")??"";const kgRelation=reasons.find(r=>r.startsWith("RELATION:"))?.replace("RELATION:","")??"";const kgDegraded=reasons.includes("KG_RETRIEVAL_DEGRADED");const kgConsistency=reasons.find(r=>r.startsWith("KG_CONSISTENCY:"))?.replace("KG_CONSISTENCY:","")??"";
+const consistencyMeta: Record<string,{t:string;c:string}> = {
+  KG_AGREES:{t:"KG 与 L1 一致",c:"bg-emerald-50 text-emerald-700 border-emerald-200"},
+  KG_RANK_DIVERGES:{t:"KG 排名分歧，L1 为准",c:"bg-amber-50 text-amber-700 border-amber-200"},
+  KG_L1_CANDIDATE_MISSING:{t:"L1 策略不在 KG 候选中（需修复图谱）",c:"bg-amber-50 text-amber-700 border-amber-200"},
+  KG_NO_CANDIDATES:{t:"KG 无候选，L1 兜底",c:"bg-slate-50 text-slate-600 border-slate-200"},
+  KG_MITIGATES_MISSING:{t:"缺 MITIGATES 反向边（需修复图谱）",c:"bg-amber-50 text-amber-700 border-amber-200"},
+  KG_UNAVAILABLE:{t:"KG 降级（Neo4j 不可用），L1 兜底",c:"bg-slate-50 text-slate-600 border-slate-200"},
+};
+const isYamlFallback=reasons.some(r=>r.startsWith("ROOT_CAUSE_RULE_MATCHED:"))&&!kgStrategy;const hasKG=Boolean(kgStrategy);const autoPassed=!state.requires_manual_review&&hasKG;return(<div className="dash-card"><div className="dash-card-header flex items-center justify-between">KG Strategy Decision{proposalId?<a href={`${DEFAULT_API_BASE}/api/iteration/decisions/${proposalId}`} target="_blank" className="text-xs text-indigo-500 hover:underline">Proposal</a>:null}</div><div className="dash-card-body">{isYamlFallback?<div className="space-y-2"><div className="rounded-lg bg-slate-50 border border-slate-100 p-3 text-xs text-slate-600">规则兜底命中（KG 未参与最终选择）<br/>根因: {formatRootCause(state.primary_root_cause_code)}<br/>策略: {strategy||"—"}<br/>动作: {String(state.recommended_action||"")}</div>{kgConsistency&&<div className={`rounded-lg border px-3 py-2 text-xs font-semibold ${(consistencyMeta[kgConsistency]??{c:"bg-slate-50 text-slate-600 border-slate-200"}).c}`}>{(consistencyMeta[kgConsistency]??{t:kgConsistency}).t}</div>}</div>:kgDegraded?<div className="rounded-lg bg-amber-50 border border-amber-100 p-3 text-xs text-amber-700">KG 检索降级 — Neo4j 不可用，需人工复核</div>:hasKG?<div className="space-y-2"><div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3"><div className="text-[10px] text-indigo-400 font-mono mb-1">MATCH (rc)→[:RECOMMENDS]→(s)→[:MITIGATES]→(rc)</div><div className="text-xs text-indigo-600 font-mono">RootCause: {kgRelation.split("|")[0]||"?"}</div><div className="grid grid-cols-2 gap-2 mt-2">{[["Strategy",kgStrategy],["Effectiveness",kgEffectiveness?String(Number(kgEffectiveness).toFixed(3)):"?"],["Support Cases",kgCases||"?"],["Decision",autoPassed?"AUTO":"REVIEW"]].map(([l,v])=>(<div key={l} className="bg-white/60 rounded p-2"><div className="text-[10px] text-indigo-400">{l}</div><div className={`text-sm font-bold ${l==="Decision"?(autoPassed?"text-emerald-700":"text-amber-700"):"text-indigo-800"}`}>{v}</div></div>))}</div></div></div>:<p className="text-xs text-slate-400 py-4 text-center">暂无 KG 决策数据。启动 lifecycle 后显示。</p>}{reasons.length>0&&(<details className="mt-3"><summary className="text-[10px] text-slate-400 cursor-pointer hover:text-slate-600">全部理由 ({reasons.length})</summary><div className="mt-1 space-y-0.5 max-h-32 overflow-auto">{reasons.map((r,i)=><div key={i} className="text-[10px] font-mono text-slate-500 bg-slate-50 rounded px-1.5 py-0.5">{r}</div>)}</div></details>)}</div></div>);}
 
 function FeatureReconstructionView({ plan }: { plan: FeatureReconstructionPlan }) {
   const opLabel: Record<string, string> = {

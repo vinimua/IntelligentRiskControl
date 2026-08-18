@@ -107,3 +107,17 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+if __name__ == "__main__":
+    # Windows：uvicorn 0.51 的 Server.run 使用硬编码 loop_factory
+    #（ProactorEventLoop），psycopg 异步无法在其上运行。
+    # 此处绕过 Server.run，用 asyncio.run(server.serve()) 启动 ——
+    # asyncio.run 遵循本模块顶部设置的 SelectorEventLoopPolicy。
+    import uvicorn
+
+    config = uvicorn.Config(
+        "apps.modelops_api.main:app", host="0.0.0.0", port=8000,
+    )
+    server = uvicorn.Server(config)
+    asyncio.run(server.serve())

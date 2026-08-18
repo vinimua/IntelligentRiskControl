@@ -17,12 +17,23 @@ def _qualified_input(**updates) -> QualificationInput:
                 metric_code="AUC",
                 direction="HIGHER_BETTER",
                 original_drop=0.10,
-                recovered_amount=0.07,
+                recovered_amount=0.095,
                 challenger_value=0.76,
                 healthy_lower_bound=0.75,
                 bootstrap_ci_lower=0.01,
                 bootstrap_ci_upper=0.03,
-            )
+            ),
+            # 严格 A7：AUC + KS 双指标必填（REQUIRED_TARGET_METRICS_MISSING 防单指标蒙混）
+            MetricComparison(
+                metric_code="KS",
+                direction="HIGHER_BETTER",
+                original_drop=0.06,
+                recovered_amount=0.057,
+                challenger_value=0.36,
+                healthy_lower_bound=0.15,
+                bootstrap_ci_lower=0.02,
+                bootstrap_ci_upper=0.06,
+            ),
         ],
         "data_reproducible": True,
         "discrimination_passed": True,
@@ -32,6 +43,8 @@ def _qualified_input(**updates) -> QualificationInput:
         "segment_governance_passed": True,
         "oot_window_id": "W4",
         "candidate_frozen_before_oot": True,
+        # 冻结身份三要素：晋升防换包
+        "frozen_identity_checksum": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "oot_passed": True,
     }
     payload.update(updates)

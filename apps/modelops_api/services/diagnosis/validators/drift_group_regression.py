@@ -28,7 +28,10 @@ from packages.models.common.enums import (
     EvidenceDirection,
     EvidenceType,
 )
-from .metric_binding import degradation_from_delta, resolve_alert_metric_code
+from .metric_binding import (
+    degradation_from_delta,
+    resolve_metric_from_supporting_alerts,
+)
 
 
 # Spearman with only two or three points is too easy to saturate at +/-1.
@@ -41,6 +44,7 @@ async def drift_group_regression(
     alert_metric_code: str,
     multi_window_drift: dict[str, list[dict]] | None = None,
     metrics: list[dict] | None = None,
+    supporting_alert_codes: list[str] | None = None,
     **_kwargs,
 ) -> EvidenceItem:
     """C 类型验证器：漂移-退化关联分析。
@@ -86,7 +90,12 @@ async def drift_group_regression(
             window_psi[wid] = sum(psi_values) / len(psi_values)
 
     # ── 2. 只提取触发告警对应指标的 delta ──
-    target_code = resolve_alert_metric_code(alert_metric_code)
+    # 主告警绑定不到性能指标时（如 HIGH_FEATURE_PSI），从同候选的
+    # supporting alert codes 找排序性能告警（AUC_DROP → AUC）。
+    target_code = resolve_metric_from_supporting_alerts(
+        alert_metric_code,
+        supporting_alert_codes,
+    )
     if target_code is None:
         return EvidenceItem(
             evidence_id=str(uuid.uuid4()),

@@ -9,10 +9,14 @@ Celery 离线任务入口。完整流程：
 
 from __future__ import annotations
 
+import json as _json
+import uuid
 from pathlib import Path
 from typing import Any
 
 import joblib
+
+from .feature_schema import SENTINEL_FEATURES, SENTINEL_FEATURE_SCHEMA_VERSION, compute_schema_hash
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
@@ -112,7 +116,17 @@ def group_split(
     rng = np.random.default_rng(random_seed)
     assignments: dict[object, str] = {}
 
-    for _, class_groups in summary.groupby("_split_stratum"):
+    # 每层最小 group 数检查
+    min_groups_per_stratum = 5
+    for stratum, class_groups in summary.groupby("_split_stratum"):
+        n_groups = len(class_groups)
+        if n_groups < min_groups_per_stratum:
+            raise ValueError(
+                f"Split stratum '{stratum}' has only {n_groups} group(s); "
+                f"minimum {min_groups_per_stratum} required for train/val/test split. "
+                f"Add more independent instances or merge rare strata."
+            )
+
         values = class_groups[group_field].to_numpy(copy=True)
         rng.shuffle(values)
         for i, group in enumerate(values):
@@ -124,6 +138,16 @@ def group_split(
         name: labeled[labeled[group_field].map(assignments) == name].copy()
         for name in ("train", "validation", "test")
     }
+
+    # 每个集合必须同时包含 NORMAL 和 ANOMALY
+    for split_name, split_df in splits.items():
+        labels = set(split_df["anomaly_label"].astype(int).unique())
+        if labels != {0, 1}:
+            raise ValueError(
+                f"Sentinel {split_name} split must contain both "
+                f"NORMAL and ANOMALY labels; actual={sorted(labels)}. "
+                f"Add more diverse instances or adjust the split stratum key."
+            )
 
     # 泄漏检查
     train_set = set(splits["train"][group_field])
@@ -200,9 +224,10 @@ def train_sentinel(
     min_recall: float = 0.90,
     min_pr_auc: float = 0.90,
     lightgbm_params: dict[str, Any] | None = None,
-    group_field: str = "sentinel_group_id",
+    group_field: str = "scenario_instance_id",
     sentinel_version: str = "sentinel_lgbm_v1",
     artifact_dir: str | Path = ".",
+    training_run_id: str | None = None,
 ) -> tuple[SentinelBundle, dict[str, object], dict[str, pd.DataFrame]]:
     """训练 LightGBM Sentinel 模型。
 
@@ -242,15 +267,23 @@ def train_sentinel(
 
     artifact_dir = Path(artifact_dir)
 
-    # ① 分组拆分
+    # ① 特征契约校验
+    missing = sorted(set(SENTINEL_FEATURES) - set(dataset.columns))
+    if missing:
+        raise ValueError(
+            f"Sentinel training dataset missing {len(missing)} contract features: {missing}"
+        )
+
+    # ② 分组拆分
     splits = group_split(dataset, group_field=group_field, random_seed=random_seed)
-    features = sentinel_feature_columns(dataset)
+    # 使用契约特征列表，不自动选数值列
+    features = [f for f in SENTINEL_FEATURES if f in dataset.columns]
     train_df = splits["train"]
 
     if train_df.empty or train_df["anomaly_label"].nunique() < 2:
         raise ValueError("Sentinel training split requires both normal and anomalous groups")
 
-    # ② 特征预处理
+    # ③ 特征预处理
     medians = train_df[features].median(numeric_only=True).fillna(0.0).to_dict()
 
     def _prepare(df: pd.DataFrame) -> pd.DataFrame:
@@ -276,12 +309,15 @@ def train_sentinel(
         )
 
     # ⑤ 构建 SentinelBundle
+    hash = compute_schema_hash()
     bundle = SentinelBundle(
         model=model,
         features=features,
         medians={str(k): float(v) for k, v in medians.items()},
-        threshold=0.5,  # 临时值，下面会重选
+        threshold=0.5,
         sentinel_version=sentinel_version,
+        feature_schema_version=SENTINEL_FEATURE_SCHEMA_VERSION,
+        feature_schema_hash=hash,
         calibrator=calibrator,
         calibration_method=calibration_method if calibrator is not None else "NONE",
     )
@@ -323,8 +359,91 @@ def train_sentinel(
         float(test_metrics.get("pr_auc") or 0.0) >= min_pr_auc
     )
 
-    # ⑧ 保存模型
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(bundle, artifact_dir / "sentinel.joblib")
+    # ⑧ 发布门禁
+    run_id = training_run_id or str(uuid.uuid4())
+    metrics["training_run_id"] = run_id
+
+    test_metrics_for_gate = metrics.get("test") or {}
+    qualified = (
+        constraint_met
+        and test_metrics_for_gate is not None
+        and float(test_metrics_for_gate.get("recall", 0.0)) >= min_recall
+        and float(test_metrics_for_gate.get("pr_auc") or 0.0) >= min_pr_auc
+        and float(test_metrics_for_gate.get("fpr", 1.0)) <= fpr_constraint
+    )
+    metrics["qualified"] = qualified
+    metrics["published"] = qualified
+
+    # ⑨ 保存模型到版本化目录（并发安全）
+    run_dir = artifact_dir / "sentinel" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    candidate_path = run_dir / "sentinel.joblib"
+    joblib.dump(bundle, candidate_path)
+    metrics["candidate_artifact_path"] = str(candidate_path)
+    metrics["run_dir"] = str(run_dir)
+
+    active_path = artifact_dir / "active.json"
+
+    # 先填充所有发布字段，再统一写 metrics.json
+    if qualified:
+        metrics["published_artifact_path"] = str(candidate_path)
+        metrics["active_model_changed"] = True
+        metrics["active_artifact_path"] = str(candidate_path)
+        metrics["active_sentinel_version"] = bundle.sentinel_version
+        metrics["active_training_run_id"] = run_id
+
+        metrics_path = run_dir / "metrics.json"
+        metrics_path.write_text(
+            _json.dumps(metrics, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+
+        active_payload = {
+            "training_run_id": run_id,
+            "artifact_path": f"sentinel/{run_id}/sentinel.joblib",
+            "sentinel_version": bundle.sentinel_version,
+            "feature_schema_version": bundle.feature_schema_version,
+            "feature_schema_hash": bundle.feature_schema_hash,
+            "published_at": str(pd.Timestamp.now()),
+        }
+        active_tmp = artifact_dir / f"active.json.{run_id}.tmp"
+        active_tmp.write_text(
+            _json.dumps(active_payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        active_tmp.replace(active_path)
+    else:
+        metrics["published_artifact_path"] = None
+        metrics["active_model_changed"] = False
+        metrics["active_artifact_path"] = None
+
+        # 不合格时报告当前生效的旧版本信息
+        if active_path.is_file():
+            try:
+                prev = _json.loads(active_path.read_text(encoding="utf-8"))
+                metrics["active_artifact_path"] = str(
+                    artifact_dir / prev["artifact_path"]
+                )
+                metrics["active_sentinel_version"] = prev.get("sentinel_version")
+                metrics["active_training_run_id"] = prev.get("training_run_id")
+            except Exception:
+                pass
+
+        metrics["qualification_failure"] = {
+            "constraint_met": constraint_met,
+            "min_recall": min_recall,
+            "actual_recall": float(test_metrics_for_gate.get("recall", 0.0)),
+            "min_pr_auc": min_pr_auc,
+            "actual_pr_auc": float(test_metrics_for_gate.get("pr_auc") or 0.0),
+            "max_fpr": fpr_constraint,
+            "actual_fpr": float(test_metrics_for_gate.get("fpr", 1.0)),
+        }
+
+        # 不合格候选模型也保留完整失败指标（字段先全部填充再写盘）
+        metrics_path = run_dir / "metrics.json"
+        metrics_path.write_text(
+            _json.dumps(metrics, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
 
     return bundle, metrics, splits

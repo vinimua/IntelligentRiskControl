@@ -9,7 +9,8 @@ from ..common.enums import IterationExitReason
 class RetryIdentity(ContractModel):
     training_job_id: str
     experiment_id: str
-    business_round: int = Field(ge=1, le=3)
+    # 最大业务轮次统一为 2（A7 定稿 §5）
+    business_round: int = Field(ge=1, le=2)
     technical_retry_count: int = Field(ge=0)
 
 

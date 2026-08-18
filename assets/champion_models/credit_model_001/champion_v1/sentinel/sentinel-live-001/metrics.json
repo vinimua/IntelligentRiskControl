@@ -1,0 +1,95 @@
+{
+  "constraint_met": true,
+  "calibration_method": "PLATT",
+  "split_counts": {
+    "train": 210,
+    "validation": 70,
+    "test": 70
+  },
+  "split_label_counts": {
+    "train": {
+      "0": 105,
+      "1": 105
+    },
+    "validation": {
+      "1": 35,
+      "0": 35
+    },
+    "test": {
+      "0": 35,
+      "1": 35
+    }
+  },
+  "train": {
+    "accuracy": 0.9857142857142858,
+    "precision": 1.0,
+    "recall": 0.9714285714285714,
+    "f1": 0.9855072463768116,
+    "roc_auc": 1.0,
+    "pr_auc": 1.0,
+    "fpr": 0.0,
+    "confusion_matrix": [
+      [
+        105,
+        0
+      ],
+      [
+        3,
+        102
+      ]
+    ],
+    "threshold": 0.9980327681288339
+  },
+  "validation": {
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "roc_auc": 1.0,
+    "pr_auc": 1.0,
+    "fpr": 0.0,
+    "confusion_matrix": [
+      [
+        35,
+        0
+      ],
+      [
+        0,
+        35
+      ]
+    ],
+    "threshold": 0.9980327681288339
+  },
+  "test": {
+    "accuracy": 0.9857142857142858,
+    "precision": 1.0,
+    "recall": 0.9714285714285714,
+    "f1": 0.9855072463768116,
+    "roc_auc": 1.0,
+    "pr_auc": 1.0,
+    "fpr": 0.0,
+    "confusion_matrix": [
+      [
+        35,
+        0
+      ],
+      [
+        1,
+        34
+      ]
+    ],
+    "threshold": 0.9980327681288339
+  },
+  "recall_target_met": true,
+  "pr_auc_target_met": true,
+  "training_run_id": "sentinel-live-001",
+  "qualified": true,
+  "published": true,
+  "candidate_artifact_path": "assets\\champion_models\\credit_model_001\\champion_v1\\sentinel\\sentinel-live-001\\sentinel.joblib",
+  "run_dir": "assets\\champion_models\\credit_model_001\\champion_v1\\sentinel\\sentinel-live-001",
+  "published_artifact_path": "assets\\champion_models\\credit_model_001\\champion_v1\\sentinel\\sentinel-live-001\\sentinel.joblib",
+  "active_model_changed": true,
+  "active_artifact_path": "assets\\champion_models\\credit_model_001\\champion_v1\\sentinel\\sentinel-live-001\\sentinel.joblib",
+  "active_sentinel_version": "sentinel_lgbm_v1",
+  "active_training_run_id": "sentinel-live-001"
+}

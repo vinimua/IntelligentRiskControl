@@ -1,0 +1,6 @@
+{
+  "training_run_id": "sentinel-synth-004",
+  "artifact_path": "sentinel.joblib",
+  "sentinel_version": "sentinel_lgbm_v1",
+  "published_at": "2026-08-12 14:24:24.722966"
+}

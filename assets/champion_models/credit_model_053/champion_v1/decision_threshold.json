@@ -1,0 +1,9 @@
+{
+  "threshold_id": "credit_formal_lgbm_fullfeat_w0_threshold_v1",
+  "model_id": "credit_model_053",
+  "model_version": "champion_v1",
+  "score_field": "calibrated_pd",
+  "comparison": ">=",
+  "threshold": 0.28,
+  "f1": 0.8394648829431438
+}

@@ -1,7 +1,7 @@
 """P3 真实执行器 — 训练 / 校准 / 阈值 / 修复 / 部署。
 
 每个执行器被对应的 graph node 调用。
-当前：训练接入 Celery，其余提供骨架实现，通过函数签名保留未来接入点。
+计划必须携带可验证的真实模型和快照身份；Worker 缺任何输入时失败关闭。
 """
 from __future__ import annotations
 
@@ -97,18 +97,17 @@ async def dispatch_training_job(
 def create_calibration_plan(state: dict) -> dict:
     """创建校准调整计划。
 
-    真实实现会：
-    1. 从 MLflow 加载 champion 模型
-    2. 从 MinIO 加载 validation 预测分数
-    3. 训练 IsotonicRegression / PlattScaling
-    4. 保存 calibrator 到 MinIO
-    5. 注册到 MLflow
-
-    当前返回结构化计划（供后续 Worker 消费）。
+    正式口径：W2 拟合，W3 验证，W1 提供健康基线；Worker 必须重新消费
+    Champion 原始 risk score，禁止使用随机分数或校准后分数拟合。
     """
     from ...config import settings
 
-    champion_version = state.get("champion_version", "v1")
+    state = {**state, **dict(state.get("action_execution_context") or {})}
+
+    model_id = str(state.get("model_id") or "")
+    champion_version = str(state.get("champion_version") or "")
+    if not model_id or not champion_version:
+        raise ValueError("CALIBRATION_MODEL_ID_AND_VERSION_REQUIRED")
     business_round = state.get("business_round", 1)
     plan_id = state.get("calibration_plan_id") or str(uuid.uuid4())
     lifecycle_run_id = state.get("lifecycle_run_id")
@@ -116,12 +115,24 @@ def create_calibration_plan(state: dict) -> dict:
     return {
         "calibration_plan_id": plan_id,
         "lifecycle_run_id": lifecycle_run_id,
+        "model_id": model_id,
         "champion_version": champion_version,
+        "champion_bundle_uri": state.get("champion_bundle_uri"),
+        "champion_model_checksum": state.get("champion_model_checksum"),
+        "fit_snapshot_id": state.get("fit_snapshot_id") or "W2",
+        "fit_snapshot_uri": state.get("fit_snapshot_uri") or "assets/data/windows/W2/data.parquet",
+        "fit_snapshot_checksum": state.get("fit_snapshot_checksum"),
+        "validation_snapshot_id": state.get("validation_snapshot_id") or "W3",
+        "validation_snapshot_uri": state.get("validation_snapshot_uri") or "assets/data/windows/W3/data.parquet",
+        "validation_snapshot_checksum": state.get("validation_snapshot_checksum"),
+        "healthy_snapshot_id": state.get("healthy_snapshot_id") or "W1",
+        "healthy_snapshot_uri": state.get("healthy_snapshot_uri") or "assets/data/windows/W1/data.parquet",
+        "healthy_snapshot_checksum": state.get("healthy_snapshot_checksum"),
         "calibrator_type": state.get("calibrator_type") or settings.calibration_calibrator_type,
         "calibration_metrics": state.get("calibration_metrics") or settings.calibration_metrics,
-        "artifact_output_path": (
+        "artifact_output_path": state.get("calibration_artifact_output_path") or (
             f"{settings.calibration_artifact_prefix}/"
-            f"{champion_version}_calibrated_v{business_round}.joblib"
+            f"{model_id}/{champion_version}_calibrated_v{business_round}.joblib"
         ),
         "status": "PLANNED",
         "callback_endpoint": (
@@ -137,14 +148,22 @@ def create_calibration_plan(state: dict) -> dict:
 def create_threshold_plan(state: dict) -> dict:
     """创建阈值调整计划。
 
-    真实实现会：
-    1. 加载 champion 预测分布
-    2. 网格搜索最优阈值（F1 / Precision@K / Cost-based）
-    3. 输出 threshold.json 到 MinIO
+    A6 是人工批准的预留能力。缺真实业务目标变化信号或批准号时，计划创建
+    即失败；不得仅因离线指标可能提高而自动调阈值。
     """
     from ...config import settings
 
-    champion_version = state.get("champion_version", "v1")
+    state = {**state, **dict(state.get("action_execution_context") or {})}
+
+    model_id = str(state.get("model_id") or "")
+    champion_version = str(state.get("champion_version") or "")
+    if not model_id or not champion_version:
+        raise ValueError("THRESHOLD_MODEL_ID_AND_VERSION_REQUIRED")
+    if not bool(state.get("business_objective_changed")):
+        raise ValueError("A6_REAL_BUSINESS_OBJECTIVE_CHANGE_REQUIRED")
+    authorization_id = state.get("authorization_id") or state.get("manual_review_id")
+    if not authorization_id:
+        raise ValueError("A6_MANUAL_AUTHORIZATION_REQUIRED")
     business_round = state.get("business_round", 1)
     plan_id = state.get("threshold_plan_id") or str(uuid.uuid4())
     lifecycle_run_id = state.get("lifecycle_run_id")
@@ -158,12 +177,24 @@ def create_threshold_plan(state: dict) -> dict:
     return {
         "threshold_plan_id": plan_id,
         "lifecycle_run_id": lifecycle_run_id,
+        "model_id": model_id,
         "champion_version": champion_version,
+        "champion_bundle_uri": state.get("champion_bundle_uri"),
+        "champion_model_checksum": state.get("champion_model_checksum"),
+        "fit_snapshot_id": state.get("fit_snapshot_id") or "W2",
+        "fit_snapshot_uri": state.get("fit_snapshot_uri") or "assets/data/windows/W2/data.parquet",
+        "fit_snapshot_checksum": state.get("fit_snapshot_checksum"),
+        "validation_snapshot_id": state.get("validation_snapshot_id") or "W3",
+        "validation_snapshot_uri": state.get("validation_snapshot_uri") or "assets/data/windows/W3/data.parquet",
+        "validation_snapshot_checksum": state.get("validation_snapshot_checksum"),
+        "business_objective_changed": True,
+        "authorization_id": authorization_id,
+        "current_threshold": state.get("current_threshold"),
         "search_metric": state.get("search_metric") or settings.threshold_search_metric,
         "search_range": search_range,
-        "artifact_output_path": (
+        "artifact_output_path": state.get("threshold_artifact_output_path") or (
             f"{settings.threshold_artifact_prefix}/"
-            f"{champion_version}_threshold_v{business_round}.json"
+            f"{model_id}/{champion_version}_threshold_v{business_round}.json"
         ),
         "status": "PLANNED",
         "callback_endpoint": (
@@ -185,7 +216,17 @@ def create_repair_plan(state: dict) -> dict:
     from ...config import settings
     from ...services.iteration.config_loader import load_iteration_config
 
+    state = {**state, **dict(state.get("action_execution_context") or {})}
     action = state.get("recommended_action", "DATA_REPAIR")
+    if action not in {"DATA_REPAIR", "PIPELINE_REPAIR"}:
+        raise ValueError(f"REPAIR_ACTION_UNSUPPORTED:{action}")
+    model_id = str(state.get("model_id") or "")
+    champion_version = str(state.get("champion_version") or "")
+    if not model_id or not champion_version:
+        raise ValueError("REPAIR_MODEL_ID_AND_VERSION_REQUIRED")
+    affected_features = [str(name) for name in state.get("affected_features") or []]
+    if not affected_features:
+        raise ValueError("REPAIR_AFFECTED_FEATURES_REQUIRED")
     diagnosis_run_id = state.get("diagnosis_run_id", "")
     plan_id = state.get("repair_plan_id") or str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -220,11 +261,30 @@ def create_repair_plan(state: dict) -> dict:
         "repair_plan_id": plan_id,
         "lifecycle_run_id": state.get("lifecycle_run_id"),
         "action": action,
+        "model_id": model_id,
+        "champion_version": champion_version,
+        "champion_bundle_uri": state.get("champion_bundle_uri"),
+        "champion_model_checksum": state.get("champion_model_checksum"),
         "diagnosis_run_id": diagnosis_run_id,
+        "source_snapshot_id": state.get("source_snapshot_id") or "W3_DEGRADED",
+        "source_snapshot_uri": state.get("source_snapshot_uri"),
+        "source_snapshot_checksum": state.get("source_snapshot_checksum"),
+        "reference_snapshot_id": state.get("reference_snapshot_id") or (
+            "W2" if action == "DATA_REPAIR" else "W3_TRUSTED"
+        ),
+        "reference_snapshot_uri": state.get("reference_snapshot_uri"),
+        "reference_snapshot_checksum": state.get("reference_snapshot_checksum"),
+        "healthy_snapshot_id": state.get("healthy_snapshot_id") or "W1",
+        "healthy_snapshot_uri": state.get("healthy_snapshot_uri") or "assets/data/windows/W1/data.parquet",
+        "healthy_snapshot_checksum": state.get("healthy_snapshot_checksum"),
+        "affected_features": affected_features,
         "repair_items": repair_items,
+        "artifact_output_path": state.get("repair_artifact_output_path") or (
+            f"artifacts/repairs/{model_id}/{plan_id}/repaired.parquet"
+        ),
         "created_at": now,
-        "status": "PENDING_EXTERNAL_REPAIR",
-        "callback_endpoint": f"/api/internal/iteration/repair/{plan_id}/complete",
+        "status": "PLANNED",
+        "callback_endpoint": f"/api/internal/iteration/executions/REPAIR/{plan_id}/callback",
     }
 
 

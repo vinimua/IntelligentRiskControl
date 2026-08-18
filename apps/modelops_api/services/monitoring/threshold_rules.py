@@ -176,32 +176,15 @@ DEFAULT_THRESHOLD_RULES: dict[str, ThresholdRule] = {
     "OUTLIER_RATE": ThresholdRule(
         metric_code="OUTLIER_RATE",
         direction=MetricDirection.DEVIATION_BAD,
-        warning_threshold=0.005,
-        critical_threshold=0.010,
-    ),
-    "DATA_QUALITY_SCORE": ThresholdRule(
-        metric_code="DATA_QUALITY_SCORE",
-        direction=MetricDirection.HIGHER_BETTER,
-        warning_threshold=0.05,
-        critical_threshold=0.15,
-        absolute_minimum=0.60,
+        # 3×MAD 尾部事件是正常现象：1-3% 的离群率增量是诊断证据，
+        # 不应频繁打出 CRITICAL 污染诊断与根因排序
+        warning_threshold=0.03,
+        critical_threshold=0.06,
     ),
     "PREDICTION_MEAN": ThresholdRule(
         metric_code="PREDICTION_MEAN",
         direction=MetricDirection.DEVIATION_BAD,
         warning_threshold=0.02,
         critical_threshold=0.05,
-    ),
-    "MAX_FEATURE_PSI_7D": ThresholdRule(
-        metric_code="MAX_FEATURE_PSI_7D",
-        direction=MetricDirection.DEVIATION_BAD,
-        warning_threshold=0.15,
-        critical_threshold=0.30,
-    ),
-    "MAX_FEATURE_PSI_30D": ThresholdRule(
-        metric_code="MAX_FEATURE_PSI_30D",
-        direction=MetricDirection.DEVIATION_BAD,
-        warning_threshold=0.15,
-        critical_threshold=0.30,
     ),
 }

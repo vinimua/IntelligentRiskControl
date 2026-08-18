@@ -41,8 +41,10 @@ class SentinelBundle:
     medians: dict[str, float]   # 特征中位数（用于填充缺失值）
     threshold: float            # 告警阈值（FPR ≤ 3% 约束下选出）
     sentinel_version: str       # 模型版本号
-    calibrator: object | None = None    # Platt 校准器（LogisticRegression）
-    calibration_method: str = "NONE"    # 校准方法："PLATT" | "NONE"
+    feature_schema_version: str = ""       # 特征契约版本（用于 schema 校验）
+    feature_schema_hash: str = ""          # 特征列表 SHA256
+    calibrator: object | None = None       # Platt 校准器（LogisticRegression）
+    calibration_method: str = "NONE"       # 校准方法："PLATT" | "NONE"
 
 
 # ═══════════════════════════════════════════════════════════════

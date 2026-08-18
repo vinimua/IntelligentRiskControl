@@ -224,7 +224,12 @@ class WorkflowService:
         config = {"configurable": {"thread_id": lifecycle_run_id}}
         compiled = self.graph.compile(checkpointer=self.checkpointer)
         checkpoint = await compiled.aget_state(config)
-        if checkpoint is None or checkpoint.values is None:
+        if (
+            checkpoint is None
+            or not checkpoint.values
+            or not checkpoint.values.get("lifecycle_run_id")
+            or not checkpoint.values.get("current_phase")
+        ):
             repo = WorkflowRepo(self.session)
             run = await repo.get_run(lifecycle_run_id)
             if run is None:

@@ -1442,6 +1442,127 @@
         }
       }
     },
+    "/api/monitoring/sentinel/datasets": {
+      "post": {
+        "tags": [
+          "monitoring"
+        ],
+        "summary": "Generate Sentinel Dataset",
+        "description": "生成 Sentinel 训练数据集：场景注入→监测→验收→特征构建→保存快照。",
+        "operationId": "generate_sentinel_dataset_api_monitoring_sentinel_datasets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateSentinelDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/monitoring/sentinel/training-runs": {
+      "post": {
+        "tags": [
+          "monitoring"
+        ],
+        "summary": "Start Sentinel Training",
+        "description": "人工派发 Sentinel 训练任务到 Celery Worker。",
+        "operationId": "start_sentinel_training_api_monitoring_sentinel_training_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartSentinelTrainingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/monitoring/sentinel/training-runs/{task_id}": {
+      "get": {
+        "tags": [
+          "monitoring"
+        ],
+        "summary": "Get Sentinel Training Status",
+        "description": "查询 Sentinel 训练任务状态（临时方案，后续用审计表）。",
+        "operationId": "get_sentinel_training_status_api_monitoring_sentinel_training_runs__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/iteration/decisions": {
       "post": {
         "tags": [
@@ -1516,6 +1637,46 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/a7/decisions": {
+      "post": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Create A7 Decision",
+        "description": "严格 A7 决策入口（SIMULATED 模拟回放与 NATURAL 自然上游共用）。\n\n信封经 Pydantic 严格校验（CONFIRMED 根因/批准授权/规则版本四键/\nW4 隔离）后，L1 确定性选择策略并产出提案。",
+        "operationId": "create_a7_decision_api_iteration_a7_decisions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/A7DecisionEnvelope"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1762,6 +1923,49 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/runs/{iteration_run_id}/strategy-candidates": {
+      "get": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Get Strategy Candidates",
+        "description": "契约 §5.3：返回 KG 咨询候选、L1 最终策略与一致性状态。",
+        "operationId": "get_strategy_candidates_api_iteration_runs__iteration_run_id__strategy_candidates_get",
+        "parameters": [
+          {
+            "name": "iteration_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Iteration Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StrategyCandidatesEnvelope"
+                }
               }
             }
           },
@@ -2052,6 +2256,57 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PlanBuildRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/iteration/plans/{training_plan_id}/dispatch": {
+      "post": {
+        "tags": [
+          "iteration"
+        ],
+        "summary": "Dispatch Training Plan",
+        "description": "受控链路：按已批准的训练计划创建训练 Job 并真正派发 Celery Worker。\n\n训练窗口、特征筛选清单、客群权重、训练模式全部来自 TrainingPlan\n合同（服务端受信任数据），调用方只提供算法。",
+        "operationId": "dispatch_training_plan_api_iteration_plans__training_plan_id__dispatch_post",
+        "parameters": [
+          {
+            "name": "training_plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Training Plan Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchTrainingJobRequest"
               }
             }
           }
@@ -2895,6 +3150,47 @@
               "type": "string",
               "default": "PROD",
               "title": "Environment"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/internal/iteration/experiments/{experiment_id}/oot": {
+      "post": {
+        "tags": [
+          "iteration-internal"
+        ],
+        "summary": "Run Experiment Oot",
+        "description": "受控链路：对实验的冻结 Challenger 执行真实 W4 OOT 验证并回写。\n\n结果（oot_passed / w4_available / candidate_frozen_before_oot /\noot_auc / oot_ks / oot_psi）合并进 experiment_json 顶层 ——\n最终资格（Gate 6）读取的正是这些字段。",
+        "operationId": "run_experiment_oot_api_internal_iteration_experiments__experiment_id__oot_post",
+        "parameters": [
+          {
+            "name": "experiment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experiment Id"
             }
           }
         ],
@@ -4067,6 +4363,331 @@
   },
   "components": {
     "schemas": {
+      "A7Authorization": {
+        "properties": {
+          "authorization_type": {
+            "type": "string",
+            "enum": [
+              "AUTO_RULE",
+              "MANUAL_REVIEW"
+            ],
+            "title": "Authorization Type"
+          },
+          "authorization_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Authorization Id"
+          },
+          "approved": {
+            "type": "boolean",
+            "title": "Approved"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "authorization_type",
+          "authorization_id",
+          "approved"
+        ],
+        "title": "A7Authorization",
+        "description": "A7 授权契约。\n\n字段:\n    authorization_type: 授权类型——AUTO_RULE（自动规则）或 MANUAL_REVIEW（人工复核）。\n    authorization_id: 授权 ID（非空）。\n    approved: 是否已批准。"
+      },
+      "A7DecisionEnvelope": {
+        "properties": {
+          "contract_version": {
+            "type": "string",
+            "const": "a7-decision-envelope-v1",
+            "title": "Contract Version",
+            "default": "a7-decision-envelope-v1"
+          },
+          "decision_source": {
+            "type": "string",
+            "enum": [
+              "SIMULATED",
+              "NATURAL"
+            ],
+            "title": "Decision Source"
+          },
+          "lifecycle_run_id": {
+            "type": "string",
+            "title": "Lifecycle Run Id"
+          },
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          },
+          "monitoring_run_id": {
+            "type": "string",
+            "title": "Monitoring Run Id"
+          },
+          "diagnosis_run_id": {
+            "type": "string",
+            "title": "Diagnosis Run Id"
+          },
+          "agent_decision_id": {
+            "type": "string",
+            "title": "Agent Decision Id"
+          },
+          "model_id": {
+            "type": "string",
+            "title": "Model Id"
+          },
+          "champion_version": {
+            "type": "string",
+            "title": "Champion Version"
+          },
+          "champion_artifact_checksum": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-fA-F]{16,64}$",
+            "title": "Champion Artifact Checksum"
+          },
+          "model_task_type": {
+            "type": "string",
+            "const": "BINARY_CLASSIFICATION",
+            "title": "Model Task Type"
+          },
+          "algorithm_family": {
+            "type": "string",
+            "enum": [
+              "LogisticRegression",
+              "RandomForest",
+              "XGBoost",
+              "LightGBM",
+              "CatBoost",
+              "EBM"
+            ],
+            "title": "Algorithm Family"
+          },
+          "recommended_action": {
+            "type": "string",
+            "const": "MODEL_ITERATION",
+            "title": "Recommended Action"
+          },
+          "primary_root_cause": {
+            "$ref": "#/components/schemas/A7PrimaryRootCause"
+          },
+          "decay_degree": {
+            "type": "string",
+            "enum": [
+              "SHORT_TERM_7D",
+              "SUSTAINED_30D",
+              "SEVERE"
+            ],
+            "title": "Decay Degree"
+          },
+          "trigger_context": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Trigger Context"
+          },
+          "kg_strategy_candidates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Kg Strategy Candidates"
+          },
+          "affected_segments": {
+            "items": {
+              "$ref": "#/components/schemas/AffectedSegment"
+            },
+            "type": "array",
+            "title": "Affected Segments"
+          },
+          "impact_scope": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "LOCAL",
+                  "GLOBAL"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impact Scope"
+          },
+          "change_pattern": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "GRADUAL",
+                  "SUDDEN"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Pattern"
+          },
+          "change_point": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Point"
+          },
+          "ordered_evidence_window_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ordered Evidence Window Ids"
+          },
+          "authorization": {
+            "$ref": "#/components/schemas/A7Authorization"
+          },
+          "rule_versions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Rule Versions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "decision_source",
+          "lifecycle_run_id",
+          "event_id",
+          "monitoring_run_id",
+          "diagnosis_run_id",
+          "agent_decision_id",
+          "model_id",
+          "champion_version",
+          "champion_artifact_checksum",
+          "model_task_type",
+          "algorithm_family",
+          "recommended_action",
+          "primary_root_cause",
+          "decay_degree",
+          "trigger_context",
+          "authorization",
+          "rule_versions"
+        ],
+        "title": "A7DecisionEnvelope",
+        "description": "A7 决策信封——A7 L1 选择器唯一接受的输入契约。\n\n决策信封把 Agent 的一次 A7 决策「封」成结构化契约，任何字段缺失、越界或\n跨字段矛盾都会在反序列化时被 model_validator 拒绝。其中：\n- decision_source 标记该决策是 SIMULATED（模拟回放）还是 NATURAL（自然运行产生）；\n- contract_version 固定为 \"a7-decision-envelope-v1\"，保证契约版本可追溯。\n\n字段:\n    contract_version: 契约版本（固定 v1）。\n    decision_source: 决策来源——SIMULATED / NATURAL。\n    lifecycle_run_id: 生命周期运行 ID。\n    event_id: 事件 ID。\n    monitoring_run_id: 监控运行 ID。\n    diagnosis_run_id: 诊断运行 ID。\n    agent_decision_id: Agent 决策 ID。\n    model_id: 目标模型 ID。\n    champion_version: Champion 版本。\n    champion_artifact_checksum: Champion 制品 checksum（sha256 格式）。\n    model_task_type: 任务类型（固定二分类）。\n    algorithm_family: 算法家族。\n    recommended_action: 推荐动作（固定 MODEL_ITERATION，即 A7）。\n    primary_root_cause: 首要根因。\n    decay_degree: 衰减程度——短期 7 天 / 持续 30 天 / 严重。\n    trigger_context: 触发上下文（字典）。\n    kg_strategy_candidates: 知识图谱策略候选（列表）。\n    affected_segments: 受影响客群片段（列表）。\n    impact_scope: 影响范围——LOCAL / GLOBAL（概念漂移时必填）。\n    change_pattern: 变化模式——GRADUAL / SUDDEN（概念漂移时必填）。\n    change_point: 变更点（突变型概念漂移时必填）。\n    ordered_evidence_window_ids: 有序证据窗口 ID（渐变型概念漂移时必填）。\n    authorization: 授权信息。\n    rule_versions: 规则版本表（含 agent/l1/window/qualification 四个必需版本）。"
+      },
+      "A7PrimaryRootCause": {
+        "properties": {
+          "root_cause_code": {
+            "type": "string",
+            "enum": [
+              "FEATURE_DRIFT",
+              "SEGMENT_DRIFT",
+              "CONCEPT_DRIFT"
+            ],
+            "title": "Root Cause Code"
+          },
+          "candidate_status": {
+            "type": "string",
+            "const": "CONFIRMED",
+            "title": "Candidate Status"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Evidence Refs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "root_cause_code",
+          "candidate_status",
+          "confidence",
+          "evidence_refs"
+        ],
+        "title": "A7PrimaryRootCause",
+        "description": "A7 首要根因契约。\n\n字段:\n    root_cause_code: 根因编码（仅自然漂移类：FEATURE_DRIFT/SEGMENT_DRIFT/CONCEPT_DRIFT）。\n    candidate_status: 候选状态——必须为 CONFIRMED（已确认）。\n    confidence: 置信度（0~1）。\n    evidence_refs: 证据引用（至少一条）。"
+      },
+      "AffectedSegment": {
+        "properties": {
+          "segment_id": {
+            "type": "string",
+            "title": "Segment Id"
+          },
+          "segment_rule": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Segment Rule"
+          },
+          "rule_version": {
+            "type": "string",
+            "title": "Rule Version"
+          },
+          "evidence_window_id": {
+            "type": "string",
+            "title": "Evidence Window Id"
+          },
+          "reference_share": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Reference Share"
+          },
+          "current_share": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Current Share"
+          },
+          "current_sample_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Current Sample Count"
+          },
+          "current_bad_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Current Bad Count"
+          },
+          "performance_affected": {
+            "type": "boolean",
+            "title": "Performance Affected"
+          },
+          "primary": {
+            "type": "boolean",
+            "title": "Primary",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "segment_id",
+          "segment_rule",
+          "rule_version",
+          "evidence_window_id",
+          "reference_share",
+          "current_share",
+          "current_sample_count",
+          "current_bad_count",
+          "performance_affected"
+        ],
+        "title": "AffectedSegment",
+        "description": "受影响客群片段（漂移客群）契约。\n\n字段:\n    segment_id: 客群片段唯一标识。\n    segment_rule: 客群圈选规则（字典）。\n    rule_version: 圈选规则版本。\n    evidence_window_id: 证据窗口 ID。\n    reference_share: 基准窗口中的客群占比（0~1）。\n    current_share: 当前窗口中的客群占比（0~1）。\n    current_sample_count: 当前窗口样本数（非负）。\n    current_bad_count: 当前窗口坏样本数（非负，且不能超过样本总数）。\n    performance_affected: 该片段性能是否受影响。\n    primary: 是否为首要受影响片段。"
+      },
       "ApplyToNeo4jRequest": {
         "properties": {
           "weight_version": {
@@ -4261,7 +4882,8 @@
         "type": "string",
         "enum": [
           "NATURAL",
-          "SCENARIO"
+          "SCENARIO",
+          "AUDIT"
         ],
         "title": "DataTrack"
       },
@@ -4282,6 +4904,17 @@
           "champion_version": {
             "type": "string",
             "title": "Champion Version"
+          },
+          "monitoring_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitoring Run Id"
           },
           "root_causes": {
             "items": {
@@ -4312,6 +4945,177 @@
             "type": "boolean",
             "title": "Pipeline Repair Completed",
             "default": false
+          },
+          "decay_degree": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decay Degree"
+          },
+          "impact_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impact Scope"
+          },
+          "change_pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Pattern"
+          },
+          "business_round": {
+            "type": "integer",
+            "title": "Business Round",
+            "default": 1
+          },
+          "manual_approval": {
+            "type": "boolean",
+            "title": "Manual Approval",
+            "default": false
+          },
+          "failure_report_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Report Id"
+          },
+          "unstable_feature_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unstable Feature Codes"
+          },
+          "feature_evidence_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Evidence Source"
+          },
+          "segment_evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segment Evidence"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "agent_decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Decision Id"
+          },
+          "decision_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Source"
+          },
+          "algorithm_family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Algorithm Family"
+          },
+          "model_task_type": {
+            "type": "string",
+            "title": "Model Task Type",
+            "default": "BINARY_CLASSIFICATION"
+          },
+          "change_point": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Point"
+          },
+          "ordered_evidence_window_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ordered Evidence Window Ids"
+          },
+          "affected_segments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Affected Segments"
+          },
+          "authorization": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorization"
           },
           "rule_version": {
             "type": "string",
@@ -4441,6 +5245,18 @@
           "BUSINESS"
         ],
         "title": "DimensionCode"
+      },
+      "DispatchTrainingJobRequest": {
+        "properties": {
+          "model_algorithm": {
+            "type": "string",
+            "title": "Model Algorithm",
+            "default": "lightgbm"
+          }
+        },
+        "type": "object",
+        "title": "DispatchTrainingJobRequest",
+        "description": "人工/受控派发训练任务（外部执行链路）。"
       },
       "ExternalExecutionCallbackRequest": {
         "properties": {
@@ -4576,6 +5392,48 @@
         ],
         "title": "FeatureReconstructionTriggerRequest"
       },
+      "GenerateSentinelDatasetRequest": {
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "title": "Model Id",
+            "default": "credit_model_001"
+          },
+          "champion_version": {
+            "type": "string",
+            "title": "Champion Version",
+            "default": "champion_v1"
+          },
+          "base_window_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Base Window Ids"
+          },
+          "scenario_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Ids"
+          },
+          "random_seed": {
+            "type": "integer",
+            "title": "Random Seed",
+            "default": 2026
+          }
+        },
+        "type": "object",
+        "title": "GenerateSentinelDatasetRequest"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -4689,124 +5547,6 @@
         ],
         "title": "ManualReviewSubmission"
       },
-      "MetricComparison": {
-        "properties": {
-          "metric_code": {
-            "type": "string",
-            "title": "Metric Code"
-          },
-          "direction": {
-            "type": "string",
-            "title": "Direction"
-          },
-          "original_drop": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Original Drop"
-          },
-          "recovered_amount": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Recovered Amount"
-          },
-          "recovery_rate": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Recovery Rate"
-          },
-          "champion_value": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Champion Value"
-          },
-          "challenger_value": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Challenger Value"
-          },
-          "healthy_lower_bound": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Healthy Lower Bound"
-          },
-          "healthy_upper_bound": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Healthy Upper Bound"
-          },
-          "bootstrap_ci_lower": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Bootstrap Ci Lower"
-          },
-          "bootstrap_ci_upper": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Bootstrap Ci Upper"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "metric_code",
-          "direction"
-        ],
-        "title": "MetricComparison"
-      },
       "MetricDegradation": {
         "properties": {
           "metric_code": {
@@ -4893,7 +5633,7 @@
           },
           "business_round": {
             "type": "integer",
-            "maximum": 3.0,
+            "maximum": 2.0,
             "minimum": 1.0,
             "title": "Business Round",
             "default": 1
@@ -4964,77 +5704,20 @@
             "type": "string",
             "title": "Candidate Version"
           },
-          "target_metrics": {
-            "items": {
-              "$ref": "#/components/schemas/MetricComparison"
-            },
-            "type": "array",
-            "title": "Target Metrics"
-          },
-          "data_reproducible": {
-            "type": "boolean",
-            "title": "Data Reproducible"
-          },
-          "discrimination_passed": {
-            "type": "boolean",
-            "title": "Discrimination Passed"
-          },
-          "calibration_passed": {
-            "type": "boolean",
-            "title": "Calibration Passed"
-          },
-          "score_psi": {
-            "type": "number",
-            "title": "Score Psi"
-          },
-          "train_valid_gap": {
-            "type": "number",
-            "title": "Train Valid Gap"
-          },
-          "segment_governance_passed": {
-            "type": "boolean",
-            "title": "Segment Governance Passed"
-          },
-          "oot_window_id": {
-            "type": "string",
-            "title": "Oot Window Id"
-          },
-          "candidate_frozen_before_oot": {
-            "type": "boolean",
-            "title": "Candidate Frozen Before Oot"
-          },
-          "oot_usage": {
-            "type": "string",
-            "title": "Oot Usage",
-            "default": "FINAL_QUALIFICATION"
-          },
-          "oot_passed": {
-            "type": "boolean",
-            "title": "Oot Passed"
-          },
           "data_track": {
             "$ref": "#/components/schemas/DataTrack",
             "default": "NATURAL"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "qualification_run_id",
           "iteration_run_id",
           "experiment_id",
-          "candidate_version",
-          "data_reproducible",
-          "discrimination_passed",
-          "calibration_passed",
-          "score_psi",
-          "train_valid_gap",
-          "segment_governance_passed",
-          "oot_window_id",
-          "candidate_frozen_before_oot",
-          "oot_passed"
+          "candidate_version"
         ],
-        "title": "QualificationRequest"
+        "title": "QualificationRequest",
+        "description": "外部资格验证请求 —— 只接收身份字段。\n\n所有资格指标（score_psi / train_valid_gap / 目标恢复 / 数据复现 /\n判别 / 校准 / OOT / 特征级 PSI）均由服务端从受信任的\nexperiment_json（W3 验证结果 + OOT 写回）与监测漂移数据加载，\n调用方无法伪造任何门禁输入。"
       },
       "RegisterModelRequest": {
         "properties": {
@@ -5364,6 +6047,18 @@
             },
             "type": "array",
             "title": "Evidence Types"
+          },
+          "candidate_status": {
+            "type": "string",
+            "title": "Candidate Status",
+            "default": "SUSPECTED"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence Refs"
           }
         },
         "additionalProperties": false,
@@ -5585,8 +6280,238 @@
         ],
         "title": "StartRunRequest"
       },
+      "StartSentinelTrainingRequest": {
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Model Id"
+          },
+          "champion_version": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Champion Version"
+          },
+          "dataset_snapshot_id": {
+            "type": "string",
+            "title": "Dataset Snapshot Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model_id",
+          "champion_version",
+          "dataset_snapshot_id"
+        ],
+        "title": "StartSentinelTrainingRequest"
+      },
+      "StrategyCandidateItem": {
+        "properties": {
+          "strategy_code": {
+            "type": "string",
+            "title": "Strategy Code"
+          },
+          "recommends_relation_key": {
+            "type": "string",
+            "title": "Recommends Relation Key"
+          },
+          "mitigates_relation_key": {
+            "type": "string",
+            "title": "Mitigates Relation Key"
+          },
+          "relation_effective_weight_snapshot": {
+            "type": "number",
+            "title": "Relation Effective Weight Snapshot"
+          },
+          "historical_effectiveness": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Historical Effectiveness"
+          },
+          "strategy_rank_score": {
+            "type": "number",
+            "title": "Strategy Rank Score",
+            "default": 0.0
+          },
+          "rank_score_source": {
+            "type": "string",
+            "title": "Rank Score Source",
+            "default": "INITIAL_PRIOR"
+          },
+          "support_case_count": {
+            "type": "integer",
+            "title": "Support Case Count",
+            "default": 0
+          },
+          "total_case_count": {
+            "type": "integer",
+            "title": "Total Case Count",
+            "default": 0
+          },
+          "natural_case_count": {
+            "type": "integer",
+            "title": "Natural Case Count",
+            "default": 0
+          },
+          "confidence_lower_bound": {
+            "type": "number",
+            "title": "Confidence Lower Bound",
+            "default": 0.0
+          },
+          "training_cost_level": {
+            "type": "string",
+            "title": "Training Cost Level",
+            "default": "MEDIUM"
+          },
+          "risk_level": {
+            "type": "string",
+            "title": "Risk Level",
+            "default": "LOW"
+          },
+          "primary_training_mode": {
+            "type": "string",
+            "title": "Primary Training Mode",
+            "default": "FULL_RETRAIN"
+          },
+          "required_context": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Context"
+          },
+          "selected": {
+            "type": "boolean",
+            "title": "Selected",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "strategy_code",
+          "recommends_relation_key",
+          "mitigates_relation_key",
+          "relation_effective_weight_snapshot"
+        ],
+        "title": "StrategyCandidateItem",
+        "description": "契约 §5.3 策略候选条目（KG 咨询层）。"
+      },
+      "StrategyCandidatesEnvelope": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "data": {
+            "$ref": "#/components/schemas/StrategyCandidatesResponse"
+          },
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "code",
+          "message",
+          "data",
+          "trace_id"
+        ],
+        "title": "StrategyCandidatesEnvelope",
+        "description": "契约 §5.3 响应包络（正式 OpenAPI schema）。"
+      },
+      "StrategyCandidatesResponse": {
+        "properties": {
+          "iteration_run_id": {
+            "type": "string",
+            "title": "Iteration Run Id"
+          },
+          "root_cause_code": {
+            "type": "string",
+            "title": "Root Cause Code"
+          },
+          "weight_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Version"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/StrategyCandidateItem"
+            },
+            "type": "array",
+            "title": "Candidates"
+          },
+          "l1_final_strategy_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "L1 Final Strategy Code"
+          },
+          "kg_consistency_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kg Consistency Status"
+          },
+          "kg_repair_required": {
+            "type": "boolean",
+            "title": "Kg Repair Required",
+            "default": false
+          },
+          "retrieval_degraded": {
+            "type": "boolean",
+            "title": "Retrieval Degraded",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "iteration_run_id",
+          "root_cause_code"
+        ],
+        "title": "StrategyCandidatesResponse"
+      },
       "TimeRange": {
         "properties": {
+          "window_id": {
+            "type": "string",
+            "title": "Window Id",
+            "default": ""
+          },
           "start_at": {
             "type": "string",
             "format": "date-time",
@@ -5741,6 +6666,18 @@
             "type": "boolean",
             "title": "Candidate Frozen Before Oot",
             "default": false
+          },
+          "consumption_receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consumption Receipt"
           }
         },
         "additionalProperties": false,
@@ -5769,6 +6706,11 @@
             "title": "Model Id",
             "default": ""
           },
+          "lifecycle_run_id": {
+            "type": "string",
+            "title": "Lifecycle Run Id",
+            "default": ""
+          },
           "iteration_run_id": {
             "type": "string",
             "title": "Iteration Run Id"
@@ -5783,13 +6725,23 @@
           },
           "business_round": {
             "type": "integer",
-            "maximum": 3.0,
+            "maximum": 2.0,
             "minimum": 1.0,
             "title": "Business Round"
           },
           "strategy_code": {
             "type": "string",
             "title": "Strategy Code"
+          },
+          "execution_mode": {
+            "type": "string",
+            "title": "Execution Mode",
+            "default": ""
+          },
+          "training_data_mode": {
+            "type": "string",
+            "title": "Training Data Mode",
+            "default": ""
           },
           "training_window_ids": {
             "items": {
@@ -5834,6 +6786,20 @@
             "minItems": 1,
             "title": "Data Snapshot Ids"
           },
+          "data_snapshot_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Data Snapshot Checksums"
+          },
+          "data_snapshot_uris": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Data Snapshot Uris"
+          },
           "label_versions": {
             "items": {
               "type": "string"
@@ -5847,17 +6813,69 @@
             "type": "object",
             "title": "Sample Weight Policy"
           },
+          "sample_weight_required": {
+            "type": "boolean",
+            "title": "Sample Weight Required",
+            "default": false
+          },
+          "affected_segments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Affected Segments"
+          },
+          "change_point": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Point"
+          },
           "feature_schema_version": {
             "type": "string",
             "title": "Feature Schema Version"
+          },
+          "ordered_features": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ordered Features"
+          },
+          "ordered_features_hash": {
+            "type": "string",
+            "title": "Ordered Features Hash",
+            "default": ""
           },
           "preprocessing_version": {
             "type": "string",
             "title": "Preprocessing Version"
           },
+          "preprocessing_hash": {
+            "type": "string",
+            "title": "Preprocessing Hash",
+            "default": ""
+          },
           "algorithm": {
             "type": "string",
             "title": "Algorithm"
+          },
+          "algorithm_family": {
+            "type": "string",
+            "title": "Algorithm Family",
+            "default": ""
+          },
+          "champion_artifact_checksum": {
+            "type": "string",
+            "title": "Champion Artifact Checksum",
+            "default": ""
           },
           "hyperparameters": {
             "additionalProperties": true,
@@ -5888,9 +6906,33 @@
             "title": "Artifact Output Uri"
           },
           "training_mode": {
-            "type": "string",
-            "title": "Training Mode",
-            "default": "full"
+            "$ref": "#/components/schemas/TrainingMode",
+            "default": "FULL_RETRAIN"
+          },
+          "unstable_feature_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unstable Feature Codes"
+          },
+          "selected_feature_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Selected Feature Codes"
+          },
+          "feature_selection_artifact_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Selection Artifact Uri"
           }
         },
         "additionalProperties": false,
@@ -5917,6 +6959,18 @@
         ],
         "title": "TrainingJobInput",
         "description": "训练参数；技术重试必须复用 training_job_id 和 idempotency_key。"
+      },
+      "TrainingMode": {
+        "type": "string",
+        "enum": [
+          "FULL_RETRAIN",
+          "INCREMENTAL_TRAIN",
+          "PARAMETER_TUNING",
+          "FEATURE_SELECTION",
+          "FEATURE_RECONSTRUCTION",
+          "NONE"
+        ],
+        "title": "TrainingMode"
       },
       "TriggerCalibrationRequest": {
         "properties": {

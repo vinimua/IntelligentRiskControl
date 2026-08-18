@@ -1,0 +1,17 @@
+{
+  "dataset_id": "78e0cbd7-1adb-4e91-bf9a-918f1cf6245c",
+  "model_id": "credit_model_001",
+  "schema_version": "sentinel-features-v1",
+  "feature_schema_hash": "03c95eb2a3dded9746e8e476ba6e356467e3e8630c40a20bc102e493536191ef",
+  "row_count": 175,
+  "scenario_count": 35,
+  "accepted_normal_count": 0,
+  "accepted_anomaly_count": 35,
+  "total_instances": 35,
+  "accepted_normal": 0,
+  "accepted_anomaly": 35,
+  "uncertain": 25,
+  "errors": 0,
+  "normal_count": 0,
+  "anomaly_count": 175
+}

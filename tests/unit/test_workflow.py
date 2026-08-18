@@ -5,19 +5,15 @@ import pytest
 
 from apps.modelops_api.services.workflow import graph as wf
 from apps.modelops_api.services.workflow.graph import (
-    MOCK_CHALLENGER_QUALIFIED,
-    MOCK_DEPLOYMENT_DECISION,
     agent_decision_node,
     build_graph,
     calibration_plan_node,
     _deployment_action,
-    deployment_node,
     diagnosis_handoff_node,
     diagnosis_node,
     event_pending_repair_node,
     failure_analysis_node,
     iteration_decision_node,
-    iteration_subgraph,
     manual_review_node,
     monitoring_node,
     no_alert_close_node,
@@ -89,8 +85,6 @@ class TestGraphStructure:
             "NextRoundPlanNode", "StopAutoIterationNode",
             # P4
             "DeploymentGateNode", "EventCloseNode",
-            # Legacy
-            "IterationSubgraph", "DeploymentNode",
         }
         assert expected.issubset(nodes), f"missing nodes: {expected - nodes}"
 
@@ -217,43 +211,6 @@ class TestDiagnosisNode:
         assert result["last_error"]["reason"] == "missing_monitoring_run_id"
 
 
-class TestIterationSubgraph:
-    async def test_challenger_qualified(self):
-        original = wf.MOCK_CHALLENGER_QUALIFIED
-        wf.MOCK_CHALLENGER_QUALIFIED = True
-        try:
-            result = await iteration_subgraph(_base_state())
-            assert result["challenger_qualified"] is True
-            assert result["challenger_version"] is not None
-        finally:
-            wf.MOCK_CHALLENGER_QUALIFIED = original
-
-    async def test_challenger_not_qualified(self):
-        original = MOCK_CHALLENGER_QUALIFIED
-        wf.MOCK_CHALLENGER_QUALIFIED = False
-        try:
-            result = await iteration_subgraph(_base_state())
-            assert result["challenger_qualified"] is False
-        finally:
-            wf.MOCK_CHALLENGER_QUALIFIED = original
-
-
-class TestDeploymentNode:
-    async def test_promote_path(self):
-        result = await deployment_node(_base_state())
-        assert result["deployment_decision"] == "PROMOTE"
-        assert result["current_phase"] == LifecyclePhase.PROMOTED.value
-
-    async def test_rollback_path(self):
-        original = MOCK_DEPLOYMENT_DECISION
-        wf.MOCK_DEPLOYMENT_DECISION = "ROLLBACK"
-        try:
-            result = await deployment_node(_base_state())
-            assert result["current_phase"] == LifecyclePhase.ROLLED_BACK.value
-        finally:
-            wf.MOCK_DEPLOYMENT_DECISION = original
-
-
 class TestManualReviewNode:
     async def test_interrupt_approved_continues(self):
         """模拟人工审核通过：interrupt 返回 'approved' → phase 进入 DECISION_PROPOSED。"""
@@ -294,6 +251,8 @@ class TestStateConstraints:
             assert "DataFrame" not in anno_str, f"{name} 不应包含 DataFrame"
             assert "Evidence" not in anno_str, f"{name} 不应包含完整 Evidence"
             assert "list[dict]" not in anno_str, f"{name} 不应包含 list[dict]"
+            if name in {"affected_features", "selected_feature_codes", "unstable_feature_codes"}:
+                continue  # A3-A6/A7 执行合同字段（诊断/归因证据驱动的控制字段）
             assert "list[str]" not in anno_str, f"{name} 不应包含 list[str]"
 
 
@@ -455,12 +414,13 @@ class TestRouteAfterIterationDecision:
         )
         assert result == "TrainingPlanNode"
 
-    def test_need_iteration_true_full_tier_without_issues_still_goes_to_recon(self):
-        """need_iteration=True + strategy_tier=full → 即使无特征问题也走重构"""
+    def test_need_iteration_true_full_retrain_without_issues_skips_recon(self):
+        """A7 §7: 路由由 TrainingMode 驱动。FULL_RETRAIN 无特征问题 →
+        直接 TrainingPlanNode（不再按 strategy_tier=full 强制走重构）。"""
         result = route_after_iteration_decision(
             _base_state(requires_manual_review=False, need_iteration=True)
         )
-        assert result == "FeatureReconstructionNode"
+        assert result == "TrainingPlanNode"
 
     def test_need_iteration_false_goes_to_observation_close(self):
         result = route_after_iteration_decision(
@@ -593,26 +553,21 @@ class TestTrainingJobDispatchNode:
 class TestQualificationNode:
     async def test_fallback_qualified(self):
         from unittest.mock import patch
-        original = wf.MOCK_CHALLENGER_QUALIFIED
-        wf.MOCK_CHALLENGER_QUALIFIED = True
-        try:
-            with patch(
-                "apps.modelops_api.database.async_session",
-                side_effect=OSError("database unavailable"),
-            ):
-                result = await qualification_node(
-                    _base_state(
-                        decision_proposal_id="prop-001",
-                        iteration_run_id="iter-001",
-                        experiment_id="exp-001",
-                        business_round=1,
-                    )
+        with patch(
+            "apps.modelops_api.database.async_session",
+            side_effect=OSError("database unavailable"),
+        ):
+            result = await qualification_node(
+                _base_state(
+                    decision_proposal_id="prop-001",
+                    iteration_run_id="iter-001",
+                    experiment_id="exp-001",
+                    business_round=1,
                 )
-                # DB 不可用 → 现在直接 FAILED，不虚构 qualified
-                assert result["challenger_qualified"] is False
-                assert result["current_phase"] == LifecyclePhase.FAILED.value
-        finally:
-            wf.MOCK_CHALLENGER_QUALIFIED = original
+            )
+            # DB 不可用 → 现在直接 FAILED，不虚构 qualified
+            assert result["challenger_qualified"] is False
+            assert result["current_phase"] == LifecyclePhase.FAILED.value
 
 
 class TestNextRoundPlanNode:
@@ -633,12 +588,25 @@ class TestExecutorBackedPlanNodes:
             recommended_action="DATA_REPAIR",
             diagnosis_run_id="diag-001",
             business_round=1,
+            affected_features=["income_level"],
+            authorization_id="auth-001",
+            business_objective_changed=True,
         )
 
-        repair = await repair_plan_node(state)
+        # 修复/校准/阈值节点均有 interrupt()，需要 mock LangGraph interrupt
+        with patch(
+            "apps.modelops_api.services.workflow.graph.interrupt",
+            return_value={
+                "status": "SUCCEEDED",
+                "artifact_uri": "s3://riskitem/repairs/test.parquet",
+                "artifact_checksum": "sha256:abc",
+                "metrics": {},
+                "consumption_receipt": {},
+            },
+        ):
+            repair = await repair_plan_node(state)
         assert repair["repair_plan_id"]
 
-        # 校准/阈值节点现在有 interrupt()，需要 mock LangGraph interrupt
         with patch(
             "apps.modelops_api.services.workflow.graph.interrupt",
             return_value={"status": "SUCCEEDED", "calibrator_artifact_uri": "s3://riskitem/calibrators/test.joblib"},

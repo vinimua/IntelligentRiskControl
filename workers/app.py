@@ -35,6 +35,12 @@ app.config_from_object(
                 "schedule": crontab(minute="47", hour="*/6"),
                 "kwargs": {},
             },
+            # A7 §8: 每日定时触发监测生命周期（只启动监测，不直接重训）
+            "scheduled-lifecycle-trigger-daily": {
+                "task": "workers.lifecycle_trigger_tasks.scheduled_lifecycle_trigger",
+                "schedule": crontab(minute="23", hour="8"),
+                "kwargs": {},
+            },
         },
     }
 )
@@ -47,6 +53,8 @@ app.conf.imports = (
     "workers.kg_tasks",
     "workers.feature_tasks",
     "workers.tuning_tasks",
+    "workers.sentinel_tasks",
+    "workers.lifecycle_trigger_tasks",
 )
 
 

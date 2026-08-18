@@ -17,6 +17,7 @@ on W2/W3, call back, qualify and deploy.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -24,7 +25,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
-API = "http://127.0.0.1:8000"
+API = os.getenv("MODELOPS_API_BASE", "http://127.0.0.1:8000")
 TIMEOUT_SECONDS = 240
 POLL_SECONDS = 5
 passed = 0
@@ -117,7 +118,7 @@ def wait_for_terminal(run_id: str) -> dict[str, Any]:
         mode = last_state.get("training_dispatch_mode")
         callback_status = last_state.get("training_callback_status")
         print(f"  poll phase={phase} mode={mode} callback={callback_status}")
-        if phase in {"EVENT_CLOSED", "FAILED", "NO_ALERT", "COMPLETED"}:
+        if phase in {"EVENT_CLOSED", "ROLLED_BACK", "FAILED", "NO_ALERT", "COMPLETED"}:
             return last_state
         time.sleep(POLL_SECONDS)
     return last_state

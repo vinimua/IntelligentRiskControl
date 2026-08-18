@@ -90,6 +90,8 @@ async def test_regression_with_too_few_windows_does_not_affect_ranking() -> None
 
 @pytest.mark.asyncio
 async def test_temporal_check_rejects_overlapping_horizons() -> None:
+    """两个窗口互相嵌套（7D ⊂ 30D）：抽取非重叠子集后只剩 1 个锚点，
+    不足 2 个 → 不适用（SAMPLE_TOO_SMALL）。"""
     windows = ["7D_20251225_20251231", "30D_20251202_20251231"]
     evidence = await temporal_precedence_check(
         [],
@@ -104,13 +106,35 @@ async def test_temporal_check_rejects_overlapping_horizons() -> None:
     )
 
     assert evidence.applicable is False
-    assert evidence.availability_status == AvailabilityStatus.NOT_APPLICABLE
+    assert evidence.availability_status == AvailabilityStatus.SAMPLE_TOO_SMALL
     assert evidence.evidence_detail_json["target_metric_code"] == "KS"
-    assert evidence.evidence_detail_json["per_window_delta"] == {
-        windows[0]: -0.01,
-        windows[1]: -0.02,
-    }
-    assert "时间重叠" in evidence.evidence_detail_json["message"]
+
+
+@pytest.mark.asyncio
+async def test_temporal_check_extracts_disjoint_subset_from_sliding_windows() -> None:
+    """监控滑动窗口（7D 每天一步）天然重叠：时序验证抽取非重叠锚点
+    子集后仍可判定漂移先于退化（SUPPORT）。"""
+    windows = [
+        "7D_20251201_20251208", "7D_20251202_20251209", "7D_20251203_20251210",
+        "7D_20251208_20251215", "7D_20251215_20251222",
+    ]
+    # 漂移峰值在最早窗口（0.60），退化峰值在最后窗口（-0.40）
+    evidence = await temporal_precedence_check(
+        [],
+        "KS_DROP",
+        multi_window_drift=_drift(windows, [0.60, 0.55, 0.50, 0.40, 0.30]),
+        metrics=[
+            _metric("KS", windows[0], -0.01),
+            _metric("KS", windows[1], -0.02),
+            _metric("KS", windows[2], -0.05),
+            _metric("KS", windows[3], -0.20),
+            _metric("KS", windows[4], -0.40),
+        ],
+    )
+
+    assert evidence.applicable is True
+    assert evidence.direction == EvidenceDirection.SUPPORT
+    assert evidence.evidence_detail_json["target_metric_code"] == "KS"
 
 
 @pytest.mark.asyncio

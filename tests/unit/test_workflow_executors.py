@@ -48,6 +48,10 @@ def test_plan_executors_accept_plain_state_dict():
         "recommended_action": "DATA_REPAIR",
         "diagnosis_run_id": "diag-001",
         "champion_version": "champion_v1",
+        "model_id": "credit_model_001",
+        "affected_features": ["income_level"],
+        "business_objective_changed": True,
+        "authorization_id": "auth-001",
         "business_round": 2,
     }
 
@@ -55,8 +59,8 @@ def test_plan_executors_accept_plain_state_dict():
     calibration = create_calibration_plan(state)
     threshold = create_threshold_plan(state)
 
-    assert repair["status"] == "PENDING_EXTERNAL_REPAIR"
-    assert repair["callback_endpoint"].startswith("/api/internal/iteration/repair/")
+    assert repair["status"] == "PLANNED"
+    assert repair["callback_endpoint"].startswith("/api/internal/iteration/executions/")
     assert calibration["calibrator_type"] == "isotonic"
     assert threshold["search_range"]["step"] == 0.01
 
