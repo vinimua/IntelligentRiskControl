@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { requestJson, Panel, StatTile, StatusDot, Badge, formatValue, fmtTs, Btn, Empty, Spinner } from "./shared";
 
 type Items<T> = { items: T[]; total?: number };
@@ -204,7 +204,8 @@ type PatrolRunResult = {
   summary?: {
     checked?: number;
     healthy?: number;
-    held?: number;
+    alerted?: number;
+    repairing?: number;
     rolled_back?: number;
     skipped?: number;
   };
@@ -214,13 +215,18 @@ type PatrolRunResult = {
     stage?: string;
     patrol_status?: string;
     action?: string;
-    health_result?: {
-      passed?: boolean;
-      rollback_recommended?: boolean;
-      rollback_reasons?: string[];
-    };
+    lifecycle_run_id?: string;
+    current_phase?: string;
+    has_alerts?: boolean;
+    trigger_diagnosis?: boolean;
+    alert_count?: number;
+    primary_root_cause_code?: string | null;
+    recommended_action?: string | null;
   }>;
 };
+
+type PatrolSummary = NonNullable<PatrolRunResult["summary"]>;
+type PatrolRunItem = NonNullable<PatrolRunResult["results"]>[number];
 
 const stageLabels: Record<string, { label: string; desc: string }> = {
   OFFLINE_VALIDATION: { label: "离线验证", desc: "先用离线验证集检查候选模型是否达标，不接业务流量。" },
@@ -327,11 +333,13 @@ export default function TaskFourPanel({
   const [rollbackDrill, setRollbackDrill] = useState<RollbackDrillResult | null>(null);
   const [patrolEnabled, setPatrolEnabled] = useState(false);
   const [patrolIntervalSec, setPatrolIntervalSec] = useState(10);
-  const [failurePatrolModelId, setFailurePatrolModelId] = useState("");
+  const [focusPatrolModelId, setFocusPatrolModelId] = useState("");
   const [patrolResult, setPatrolResult] = useState<PatrolRunResult | null>(null);
   const [patrolLastRunAt, setPatrolLastRunAt] = useState("");
   const [patrolNextRunAt, setPatrolNextRunAt] = useState("");
+  const [patrolStream, setPatrolStream] = useState({ currentModelId: "", done: 0, total: 0 });
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const patrolRunningRef = useRef(false);
 
   const selectedDeployment = detail?.deployment || deployments.find((item) => item.deployment_id === selectedDeploymentId);
   const patrolHomeOnly = view === "patrol";
@@ -355,6 +363,12 @@ export default function TaskFourPanel({
     return Math.max(0, Math.min(100, Math.round(((total - patrolCountdownSec) / total) * 100)));
   }, [patrolEnabled, patrolIntervalSec, patrolNextRunAt, patrolCountdownSec]);
 
+  const patrolExecutionProgress = useMemo(() => {
+    if (busy !== "patrol") return patrolProgress;
+    if (!patrolStream.total) return 4;
+    return Math.max(4, Math.min(100, Math.round((patrolStream.done / patrolStream.total) * 100)));
+  }, [busy, patrolProgress, patrolStream.done, patrolStream.total]);
+
   useEffect(() => {
     void refreshAll(false);
   }, []);
@@ -366,13 +380,26 @@ export default function TaskFourPanel({
 
   useEffect(() => {
     if (!patrolEnabled) return;
+    let cancelled = false;
+    let timer: number | undefined;
     const intervalMs = Math.max(10, patrolIntervalSec) * 1000;
-    setPatrolNextRunAt(new Date(Date.now() + intervalMs).toISOString());
-    const timer = window.setInterval(() => {
-      void runPatrolOnce(false);
-    }, intervalMs);
-    return () => window.clearInterval(timer);
-  }, [patrolEnabled, patrolIntervalSec, failurePatrolModelId]);
+
+    const scheduleNext = () => {
+      if (cancelled) return;
+      setPatrolNextRunAt(new Date(Date.now() + intervalMs).toISOString());
+      timer = window.setTimeout(async () => {
+        if (cancelled) return;
+        await runPatrolOnce(false);
+        scheduleNext();
+      }, intervalMs);
+    };
+
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [patrolEnabled, patrolIntervalSec, focusPatrolModelId]);
 
   async function withBusy<T>(key: string, fn: () => Promise<T>, ok?: string) {
     setBusy(key);
@@ -698,26 +725,115 @@ export default function TaskFourPanel({
   }
 
   async function runPatrolOnce(showMessage = true) {
-    const result = await withBusy("patrol", () => requestJson<PatrolRunResult>(
-      apiBase,
-      "/api/iteration/task4/patrol/run-once",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          interval_seconds: patrolIntervalSec,
-          failure_model_id: failurePatrolModelId.trim() || null,
-          persist: true,
-          updated_by: "frontend_scheduled_patrol",
-        }),
+    if (patrolRunningRef.current) return;
+    patrolRunningRef.current = true;
+    setBusy("patrol");
+    setMessage(null);
+    setPatrolStream({ currentModelId: "", done: 0, total: 0 });
+    const startedAt = new Date().toISOString();
+    const emptySummary: PatrolSummary = { checked: 0, healthy: 0, alerted: 0, repairing: 0, rolled_back: 0, skipped: 0 };
+    let aggregate: PatrolRunResult = {
+      scheduler: {
+        mode: "LIFECYCLE_ALERT_PATROL_STREAM",
+        interval_seconds: patrolIntervalSec,
+        persisted: true,
+        checked_at: startedAt,
       },
-    ), showMessage ? "定时巡检已完成" : undefined);
-    if (result) {
-      const checkedAt = result.scheduler?.checked_at || new Date().toISOString();
-      setPatrolResult(result);
+      summary: { ...emptySummary },
+      results: [],
+    };
+    setPatrolResult(aggregate);
+
+    try {
+      let control = parallelControl;
+      if (!focusPatrolModelId.trim() && !(control?.items || []).length) {
+        control = await requestJson<ParallelControl>(apiBase, "/api/iteration/task4/parallel-control?limit=50");
+        setParallelControl(control);
+      }
+
+      const targetModelIds = getPatrolTargetModelIds(control);
+      if (targetModelIds.length === 0) {
+        throw new Error("没有可巡检的模型，请先创建或刷新部署记录");
+      }
+      setPatrolStream({ currentModelId: targetModelIds[0] || "", done: 0, total: targetModelIds.length });
+
+      for (const targetModelId of targetModelIds) {
+        const runningRow: PatrolRunItem = {
+          model_id: targetModelId,
+          patrol_status: "RUNNING",
+          action: "LIFECYCLE_RUNNING",
+        };
+        setPatrolStream((current) => ({ ...current, currentModelId: targetModelId }));
+        setPatrolResult({ ...aggregate, results: [runningRow, ...(aggregate.results || [])] });
+
+        const result = await requestJson<PatrolRunResult>(
+          apiBase,
+          "/api/iteration/task4/patrol/run-once",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              interval_seconds: patrolIntervalSec,
+              focus_model_id: targetModelId,
+              persist: true,
+              updated_by: "frontend_scheduled_patrol",
+            }),
+          },
+        );
+
+        aggregate = mergePatrolResult(aggregate, result);
+        setPatrolResult(aggregate);
+        setPatrolLastRunAt(result.scheduler?.checked_at || new Date().toISOString());
+        setPatrolStream((current) => ({ ...current, done: current.done + 1 }));
+      }
+
+      const checkedAt = aggregate.scheduler?.checked_at || new Date().toISOString();
       setPatrolLastRunAt(checkedAt);
       setPatrolNextRunAt(new Date(Date.parse(checkedAt) + Math.max(10, patrolIntervalSec) * 1000).toISOString());
+      setPatrolStream((current) => ({ ...current, currentModelId: "" }));
+      if (showMessage) setMessage({ type: "ok", text: `定时巡检已完成：${targetModelIds.length} 个模型` });
       await refreshAll(false);
+    } catch (error) {
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "巡检失败" });
+    } finally {
+      patrolRunningRef.current = false;
+      setBusy(null);
     }
+  }
+
+  function getPatrolTargetModelIds(control: ParallelControl | null) {
+    const focus = focusPatrolModelId.trim();
+    if (focus) return [focus];
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const item of control?.items || []) {
+      const itemModelId = item.model_id?.trim();
+      if (!itemModelId || seen.has(itemModelId)) continue;
+      seen.add(itemModelId);
+      ids.push(itemModelId);
+      if (ids.length >= 50) break;
+    }
+    return ids;
+  }
+
+  function mergePatrolResult(current: PatrolRunResult, next: PatrolRunResult): PatrolRunResult {
+    const summary: PatrolSummary = {
+      checked: (current.summary?.checked || 0) + (next.summary?.checked || 0),
+      healthy: (current.summary?.healthy || 0) + (next.summary?.healthy || 0),
+      alerted: (current.summary?.alerted || 0) + (next.summary?.alerted || 0),
+      repairing: (current.summary?.repairing || 0) + (next.summary?.repairing || 0),
+      rolled_back: (current.summary?.rolled_back || 0) + (next.summary?.rolled_back || 0),
+      skipped: (current.summary?.skipped || 0) + (next.summary?.skipped || 0),
+    };
+    return {
+      scheduler: {
+        mode: "LIFECYCLE_ALERT_PATROL_STREAM",
+        interval_seconds: patrolIntervalSec,
+        persisted: true,
+        checked_at: next.scheduler?.checked_at || current.scheduler?.checked_at || new Date().toISOString(),
+      },
+      summary,
+      results: [...(next.results || []), ...(current.results || [])],
+    };
   }
 
   function parseJson<T>(text: string, label: string): T | null {
@@ -768,7 +884,7 @@ export default function TaskFourPanel({
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[.16em] text-emerald-600">实时巡检</p>
             <h2 className="mt-1 text-xl font-bold tracking-tight text-slate-900">模型定时巡检与异常回滚</h2>
-            <p className="mt-1 text-sm text-slate-500">首次触发后，页面按周期巡检部署模型；健康异常时由 Gatekeeper 自动切回稳定版本。</p>
+            <p className="mt-1 text-sm text-slate-500">首次触发后，页面按周期启动生命周期监控；产生 Alert 后先切回稳定版本，再进入修复链路。</p>
           </div>
           <div className="flex flex-wrap gap-2 text-xs text-slate-500">
             <Badge label={`部署模型 ${parallelControl?.summary?.total_deployed_models ?? 0}/50`} color={(parallelControl?.summary?.total_deployed_models ?? 0) >= 50 ? "green" : "amber"} />
@@ -791,27 +907,32 @@ export default function TaskFourPanel({
           </div>
         }
       >
-        <div className="grid gap-3 md:grid-cols-5">
+        <div className="grid gap-3 md:grid-cols-6">
           <Info label="巡检状态" value={patrolEnabled ? "运行中" : "未开启"} />
           <Info label="巡检周期" value={`${patrolIntervalSec} 秒`} />
+          <Info label="当前模型" value={busy === "patrol" ? formatValue(patrolStream.currentModelId) : "-"} />
           <Info label="最近巡检" value={patrolLastRunAt ? fmtTs(patrolLastRunAt) : "-"} />
           <Info label="下一次巡检" value={patrolEnabled && patrolNextRunAt ? fmtTs(patrolNextRunAt) : "-"} />
-          <Info label="自动处理" value="异常回滚" />
+          <Info label="自动处理" value="Alert 回滚" />
         </div>
         <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
           <div className="mb-2 flex items-center justify-between gap-3 text-xs">
             <div className="flex items-center gap-2 font-semibold text-slate-700">
               <span className={`status-dot ${busy === "patrol" ? "blue pulse" : patrolEnabled ? "green pulse" : "amber"}`} />
-              {busy === "patrol" ? "正在执行巡检" : patrolEnabled ? "自动巡检计时中" : "巡检未开启"}
+              {busy === "patrol"
+                ? `正在巡检 ${formatValue(patrolStream.currentModelId)}`
+                : patrolEnabled ? "自动巡检计时中" : "巡检未开启"}
             </div>
             <div className="font-mono text-slate-500">
-              {patrolEnabled ? `${patrolCountdownSec}s 后再次巡检` : "手动执行或开启巡检"}
+              {busy === "patrol"
+                ? `${patrolStream.done}/${patrolStream.total || "-"} 已完成`
+                : patrolEnabled ? `${patrolCountdownSec}s 后再次巡检` : "手动执行或开启巡检"}
             </div>
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-white">
             <div
               className={`h-full transition-all duration-700 ${busy === "patrol" ? "bg-sky-500" : patrolEnabled ? "bg-emerald-500" : "bg-amber-400"}`}
-              style={{ width: `${busy === "patrol" ? 100 : patrolProgress}%` }}
+              style={{ width: `${patrolExecutionProgress}%` }}
             />
           </div>
         </div>
@@ -827,49 +948,54 @@ export default function TaskFourPanel({
             />
           </label>
           <label className="text-xs font-semibold text-slate-500">
-            异常模型 ID
+            重点模型 ID
             <input
               className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 font-mono text-xs"
-              placeholder="例如 credit_model_053"
-              value={failurePatrolModelId}
-              onChange={(event) => setFailurePatrolModelId(event.target.value)}
+              placeholder="留空巡检最近 50 个模型"
+              value={focusPatrolModelId}
+              onChange={(event) => setFocusPatrolModelId(event.target.value)}
             />
           </label>
         </div>
         {patrolResult ? (
-          <div className="mt-3 grid gap-2 md:grid-cols-5">
+          <div className="mt-3 grid gap-2 md:grid-cols-6">
             <Info label="本次检查" value={patrolResult.summary?.checked ?? 0} />
             <Info label="健康" value={patrolResult.summary?.healthy ?? 0} />
-            <Info label="暂停" value={patrolResult.summary?.held ?? 0} />
+            <Info label="Alert" value={patrolResult.summary?.alerted ?? 0} />
+            <Info label="修复中" value={patrolResult.summary?.repairing ?? 0} />
             <Info label="已回滚" value={patrolResult.summary?.rolled_back ?? 0} />
             <Info label="跳过" value={patrolResult.summary?.skipped ?? 0} />
           </div>
         ) : null}
         {patrolResult?.results?.length ? (
-          <div className="mt-3 max-h-40 overflow-auto rounded-lg border border-slate-200">
-            <table className="w-full min-w-[720px] text-left text-xs">
+          <div className="mt-3 max-h-[360px] overflow-auto rounded-lg border border-slate-200">
+            <table className="w-full min-w-[900px] text-left text-xs">
               <thead className="bg-slate-50 text-slate-500">
                 <tr>
                   <th className="px-3 py-2">模型</th>
+                  <th>生命周期</th>
                   <th>阶段</th>
                   <th>巡检结果</th>
                   <th>系统动作</th>
-                  <th>回滚建议</th>
+                  <th>Alert</th>
+                  <th>根因/建议</th>
                 </tr>
               </thead>
               <tbody>
-                {patrolResult.results.slice(0, 12).map((item) => (
+                {patrolResult.results.map((item) => (
                   <tr key={`${item.deployment_id}-${item.model_id}`} className="border-t border-slate-100">
                     <td className="px-3 py-2 font-mono text-slate-700">{formatValue(item.model_id)}</td>
+                    <td className="font-mono text-slate-500">{formatValue(item.lifecycle_run_id)}</td>
                     <td>{stageLabels[item.stage || ""]?.label || formatValue(item.stage)}</td>
                     <td>
                       <Badge
                         label={formatValue(item.patrol_status)}
-                        color={item.patrol_status === "ROLLED_BACK" || item.patrol_status === "HELD" ? "red" : item.patrol_status === "PASSED" ? "green" : "amber"}
+                        color={item.patrol_status === "RUNNING" ? "blue" : item.patrol_status === "ROLLED_BACK" || item.patrol_status === "ALERTED" ? "red" : item.patrol_status === "PASSED" ? "green" : "amber"}
                       />
                     </td>
                     <td>{formatValue(item.action)}</td>
-                    <td>{item.health_result?.rollback_recommended ? "是" : "否"}</td>
+                    <td>{item.has_alerts || item.trigger_diagnosis || Number(item.alert_count || 0) > 0 ? "是" : "否"}</td>
+                    <td>{formatValue(item.primary_root_cause_code || item.recommended_action || item.current_phase)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1121,9 +1247,11 @@ function ParallelControlView({
               const patrolStatus = item.last_patrol_status || (rolledBack ? "ROLLED_BACK" : "WAITING");
               const patrolAction = item.last_patrol_decision === "ROLLBACK"
                 ? "自动回滚"
+                : item.last_patrol_decision === "LIFECYCLE_ALERT"
+                  ? "Alert 后处理"
                 : item.last_patrol_decision === "HOLD"
                   ? "暂停观察"
-                  : item.last_patrol_decision === "HEALTH_CHECK"
+                : item.last_patrol_decision === "HEALTH_CHECK"
                     ? "继续巡检"
                     : rolledBack
                       ? "已回滚"
@@ -1150,7 +1278,7 @@ function ParallelControlView({
                   <td>
                     <Badge
                       label={formatValue(patrolStatus)}
-                      color={patrolStatus === "ROLLED_BACK" || patrolStatus === "HELD" ? "red" : patrolStatus === "PASSED" ? "green" : "amber"}
+                      color={patrolStatus === "ROLLED_BACK" || patrolStatus === "HELD" || patrolStatus === "ALERTED" ? "red" : patrolStatus === "PASSED" ? "green" : "amber"}
                     />
                   </td>
                   <td>{patrolAction}</td>

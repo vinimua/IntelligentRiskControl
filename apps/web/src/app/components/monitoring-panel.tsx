@@ -11,6 +11,8 @@ import type {
   AlertItem,
   EnrichedMetricsResponse,
   PersistenceJudgment,
+  DiagnosisRunDetail,
+  SupportingDocument,
 } from "./monitoring/monitoring-types";
 import { CATEGORY_ORDER } from "./monitoring/monitoring-types";
 import StatusBar from "./monitoring/status-bar";
@@ -21,6 +23,7 @@ import AlertExplanationPanel from "./monitoring/alert-explanation-panel";
 import FeatureDriftTable from "./monitoring/feature-drift-table";
 import DataQualityPanel from "./monitoring/data-quality-panel";
 import RuleCoverageTable from "./monitoring/rule-coverage-table";
+import RagSupportCard from "./monitoring/rag-support-card";
 
 type Props = { apiBase: string };
 
@@ -52,6 +55,8 @@ export default function MonitoringPanel({ apiBase }: Props) {
   // B1 持续性判定
   const [persistence, setPersistence] = useState<PersistenceJudgment | null>(null);
   const [diagnosisStatus, setDiagnosisStatus] = useState<string | null>(null);
+  const [supportingDocuments, setSupportingDocuments] = useState<SupportingDocument[] | null>(null);
+  const [supportingDocumentsLoaded, setSupportingDocumentsLoaded] = useState(false);
 
   // 底部 Tab
   const [bottomTab, setBottomTab] = useState<string>("drift");
@@ -84,12 +89,15 @@ export default function MonitoringPanel({ apiBase }: Props) {
   // ── 加载运行数据 ──
   async function loadRunData(runId: string) {
     setError(null);
+    setSupportingDocumentsLoaded(false);
+    setSupportingDocuments(null);
 
-    // 并行加载 enriched-metrics 和 alerts
+    // 并行加载 enriched-metrics、alerts 和诊断报告参考资料
     try {
-      const [metricsRes, alertsRes] = await Promise.all([
+      const [metricsRes, alertsRes, diagnosisRes] = await Promise.all([
         requestJson<EnrichedMetricsResponse>(apiBase, `/api/monitoring/runs/${runId}/enriched-metrics`).catch(() => null),
         requestJson<Items<AlertItem>>(apiBase, `/api/monitoring/runs/${runId}/alerts`).catch(() => null),
+        requestJson<DiagnosisRunDetail>(apiBase, `/api/diagnosis/runs/by-monitoring/${runId}`).catch(() => null),
       ]);
 
       if (metricsRes) {
@@ -101,8 +109,11 @@ export default function MonitoringPanel({ apiBase }: Props) {
       if (alertsRes) {
         setAlerts(alertsRes.items || []);
       }
+      setSupportingDocuments(diagnosisRes?.supporting_documents ?? []);
+      setSupportingDocumentsLoaded(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载指标数据失败");
+      setSupportingDocumentsLoaded(true);
     }
   }
 
@@ -139,6 +150,8 @@ export default function MonitoringPanel({ apiBase }: Props) {
     // 重置懒加载状态
     setDriftItems([]);
     setQualityData(null);
+    setSupportingDocuments(null);
+    setSupportingDocumentsLoaded(false);
   }
 
   // 切换底部 Tab 时懒加载
@@ -236,6 +249,12 @@ export default function MonitoringPanel({ apiBase }: Props) {
                 persistence={persistence}
                 diagnosisStatus={diagnosisStatus}
                 visibleAlertCount={alerts.length}
+              />
+
+              <RagSupportCard
+                documents={supportingDocuments}
+                loaded={supportingDocumentsLoaded}
+                diagnosisStatus={diagnosisStatus}
               />
 
               {/* 类别概览卡片 */}

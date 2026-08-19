@@ -165,6 +165,24 @@ def _diagnosis_source(run: dict, alert_rows: list[dict]) -> dict:
     }
 
 
+def _supporting_documents_from_evidence(evidence: list[dict]) -> list[dict]:
+    docs: list[dict] = []
+    seen: set[str] = set()
+    for row in evidence:
+        if row.get("method_code") != "rag_supporting_document_search":
+            continue
+        detail = _json_object(row.get("evidence_detail_json"))
+        for doc in detail.get("documents") or []:
+            if not isinstance(doc, dict):
+                continue
+            chunk_id = str(doc.get("chunk_id") or "")
+            if not chunk_id or chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            docs.append(doc)
+    return docs
+
+
 class TriggerDiagnosisRequest(BaseModel):
     monitoring_run_id: str = Field(min_length=1, max_length=100)
     lifecycle_run_id: str | None = None
@@ -217,6 +235,7 @@ async def get_run(
         "run": run,
         "candidates": candidates,
         "evidence": evidence,
+        "supporting_documents": _supporting_documents_from_evidence(evidence),
     })
 
 
@@ -253,6 +272,7 @@ async def get_diagnosis_by_monitoring(
         "run": run,
         "candidates": candidates,
         "evidence": evidence,
+        "supporting_documents": _supporting_documents_from_evidence(evidence),
         "event": _event_payload(event),
         "agent_handoff": {
             "next_stage": "AGENT_DECISION",
@@ -347,4 +367,7 @@ async def trigger_diagnosis(
         "primary_root_cause_score": result.primary_root_cause_score,
         "recommended_action": result.recommended_action.value if result.recommended_action else None,
         "need_iteration": result.need_iteration,
+        "supporting_documents": [
+            doc.model_dump(mode="json") for doc in result.supporting_documents
+        ],
     })

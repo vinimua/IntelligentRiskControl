@@ -17,6 +17,12 @@ from .decision_proposal import (
 )
 from .failure_report import FailureReport, RepairCaseRecord
 from .manual_review import ManualReviewReport, ManualReviewSubmission
+from .model_task_interface import (
+    MetricSpec,
+    ModelTaskInterfaceSummary,
+    ModelTaskProfile,
+    RiskGuardrailResult,
+)
 from .qualification import (
     MetricComparison,
     QualificationGateResult,
@@ -42,10 +48,14 @@ __all__ = [
     "ManualReviewSubmission",
     "MetricComparison",
     "MetricDegradation",
+    "MetricSpec",
+    "ModelTaskInterfaceSummary",
+    "ModelTaskProfile",
     "QualificationGateResult",
     "QualificationInput",
     "QualificationReport",
     "RepairCaseRecord",
+    "RiskGuardrailResult",
     "RiskAssessment",
     "RetryIdentity",
     "RootCauseCandidate",

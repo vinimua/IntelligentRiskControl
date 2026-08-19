@@ -399,6 +399,77 @@ class KnowledgeService:
             )
         return candidates
 
+    async def search_supporting_documents(
+        self,
+        *,
+        query: str,
+        model_id: str | None = None,
+        root_cause_code: str | None = None,
+        method_codes: list[str] | None = None,
+        top_k: int = 5,
+    ):
+        """Best-effort RAG references for reports; never drives ranking."""
+        from packages.models.diagnosis.diagnosis_context import DocumentRef
+
+        try:
+            import httpx
+            from ..config import settings
+
+            should: list[dict] = []
+            if model_id:
+                should.append({"key": "model_id", "match": {"value": model_id}})
+            if root_cause_code:
+                should.extend([
+                    {"key": "root_cause_code", "match": {"value": root_cause_code}},
+                    {"key": "root_cause_codes", "match": {"any": [root_cause_code]}},
+                ])
+            for method in method_codes or []:
+                should.extend([
+                    {"key": "method_code", "match": {"value": method}},
+                    {"key": "method_codes", "match": {"any": [method]}},
+                ])
+
+            payload: dict = {
+                "limit": max(1, min(int(top_k), 20)),
+                "with_payload": True,
+                "with_vector": False,
+            }
+            if should:
+                payload["filter"] = {"should": should}
+
+            base_url = f"http://{settings.qdrant_host}:{settings.qdrant_port}"
+            async with httpx.AsyncClient(base_url=base_url, timeout=1.5) as client:
+                response = await client.post(
+                    f"/collections/{settings.qdrant_collection_alias}/points/scroll",
+                    json=payload,
+                )
+                if response.status_code >= 400:
+                    return []
+                points = (response.json().get("result") or {}).get("points") or []
+
+            refs: list[DocumentRef] = []
+            seen: set[str] = set()
+            for point in points:
+                meta = point.get("payload") or {}
+                chunk_id = str(meta.get("chunk_id") or point.get("id") or "")
+                document_id = str(meta.get("document_id") or "")
+                if not chunk_id or not document_id or chunk_id in seen:
+                    continue
+                seen.add(chunk_id)
+                refs.append(
+                    DocumentRef(
+                        chunk_id=chunk_id,
+                        document_id=document_id,
+                        section_path=meta.get("section_path"),
+                        page_number=meta.get("page_number"),
+                        score=float(point.get("score") or meta.get("score") or 0.0),
+                    )
+                )
+            return refs
+        except Exception:
+            logger.warning("qdrant_supporting_document_search_failed", exc_info=True)
+            return []
+
     async def query_gate_blocking_alerts(self, alert_codes: list[str]) -> list[dict]:
         """查询告警中标记 gate_only 的资格门禁告警。
 

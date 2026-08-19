@@ -27,6 +27,8 @@ from packages.models.diagnosis.diagnosis_state import DiagnosisStateOutput
 from packages.models.diagnosis.evidence import EvidenceItem
 from packages.models.common.enums import (
     DimensionCode,
+    EvidenceDirection,
+    EvidenceType,
     RecommendedAction,
 )
 from packages.models.monitoring.alert_context import AlertContext
@@ -266,6 +268,48 @@ class DiagnosisService:
         primary = ranked[0][1] if ranked else None
         if primary:
             primary_rc = ranked[0][0]
+            primary_candidate_id = candidate_ids.get(primary_rc.root_cause_code)
+            primary_evidence = evidence_packages.get(primary_rc.root_cause_code, [])
+            rag_search = getattr(self.knowledge, "search_supporting_documents", None)
+            supporting_documents = (
+                await rag_search(
+                    query=(
+                        f"{primary_rc.root_cause_code} "
+                        f"{' '.join(primary_rc.supporting_alert_codes or [])}"
+                    ),
+                    model_id=model_id,
+                    root_cause_code=primary_rc.root_cause_code,
+                    method_codes=[item.method_code for item in primary_evidence],
+                    top_k=5,
+                )
+                if callable(rag_search)
+                else []
+            )
+            if supporting_documents and primary_candidate_id:
+                await self.repo.insert_evidence({
+                    "diagnosis_run_id": diag_id,
+                    "candidate_id": primary_candidate_id,
+                    "hypothesis_code": primary_rc.root_cause_code,
+                    "evidence_type": EvidenceType.D.value,
+                    "method_code": "rag_supporting_document_search",
+                    "normalized_score": max(
+                        float(doc.score or 0.0) for doc in supporting_documents
+                    ),
+                    "direction": EvidenceDirection.NEUTRAL.value,
+                    "applicable": True,
+                    "evidence_detail_json": json.dumps({
+                        "usage": "REPORT_REFERENCE_ONLY",
+                        "decision_impact": "NONE",
+                        "query": (
+                            f"{primary_rc.root_cause_code} "
+                            f"{' '.join(primary_rc.supporting_alert_codes or [])}"
+                        ),
+                        "documents": [
+                            doc.model_dump(mode="json")
+                            for doc in supporting_documents
+                        ],
+                    }, ensure_ascii=False, default=str),
+                })
             recommended_action = _dimension_to_action(primary_rc.dimension_code)
             # A7 §4/§5: 从真实漂移证据推导 L1 结构化上下文
             #（impact_scope / change_pattern 生产者，不依赖人工构造输入）
@@ -301,6 +345,7 @@ class DiagnosisService:
                 impact_scope=impact_scope,
                 change_pattern=change_pattern,
                 segment_evidence=segment_evidence,
+                supporting_documents=supporting_documents,
             )
         else:
             await self.repo.complete_run(

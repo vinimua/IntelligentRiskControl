@@ -40,6 +40,7 @@ from ..repositories.iteration_repo import IterationRepo
 from ..services.knowledge_service import KnowledgeService
 from ..services.iteration import (
     FailureAttributionService,
+    ModelTaskInterfaceService,
     QualificationService,
     RepairDecisionService,
     RiskAssessmentService,
@@ -154,7 +155,7 @@ class BatchProactiveReleaseRequest(BaseModel):
 
 class Task4PatrolRequest(BaseModel):
     interval_seconds: int = Field(default=300, ge=10, le=86400)
-    health_metrics_by_model: dict[str, dict[str, object]] = Field(default_factory=dict)
+    focus_model_id: str | None = None
     failure_model_id: str | None = None
     persist: bool = True
     updated_by: str = "task4_patrol"
@@ -701,6 +702,25 @@ async def get_iteration_config(model_id: str, request: Request):
             "strategy_rule_version": config.strategies.rule_version,
         },
     )
+
+
+@router.get("/models/{model_id}/task-interface")
+async def get_model_task_interface(
+    model_id: str,
+    request: Request,
+    champion_version: str = Query("champion_v1", min_length=1),
+    model_type: str | None = Query(None),
+    algorithm_family: str | None = Query(None),
+):
+    """Return task-type metrics and risk guardrails for adaptive iteration."""
+
+    payload = ModelTaskInterfaceService.summarize(
+        model_id=model_id,
+        champion_version=champion_version,
+        model_type=model_type,
+        algorithm_family=algorithm_family,
+    ).model_dump(mode="json")
+    return _envelope(request, payload)
 
 
 @router.post("/decisions/{proposal_id}/reviews")
@@ -1676,7 +1696,7 @@ async def get_task4_parallel_control(
                     sr.decision AS last_patrol_decision
                 FROM iteration.deployment_stage_records sr
                 WHERE sr.deployment_id = l.deployment_id
-                  AND sr.decision IN ('HEALTH_CHECK', 'ROLLBACK', 'HOLD')
+                  AND sr.decision IN ('HEALTH_CHECK', 'ROLLBACK', 'HOLD', 'LIFECYCLE_ALERT')
                 ORDER BY sr.created_at DESC
                 LIMIT 1
             ) ph ON TRUE
@@ -1755,17 +1775,18 @@ async def run_task4_patrol_once(
     body: Task4PatrolRequest = Task4PatrolRequest(),
     db: AsyncSession = Depends(get_db),
 ):
-    """Run one scheduled-inspection pass for up to 50 deployed models.
+    """Run one scheduled patrol by reusing the lifecycle Alert path.
 
-    The patrol records a health-check stage record for each deployment. If the
-    health gate and Gatekeeper recommend rollback, it restores routing to the
-    stable version through the same rollback service used by deployment gates.
+    Patrol does not invent health metrics. For each deployed model it starts a
+    lifecycle run, lets the normal monitoring/B1 Alert logic decide whether the
+    model is abnormal, and only then performs deployment protection such as
+    rollback to the stable version.
     """
-    from ..services.deployment.deployment_gatekeeper_service import DeploymentGatekeeperService
-    from ..services.iteration.deployment_safety_service import (
-        DeploymentSafetyService,
-        STAGE_TRAFFIC_RATIO,
-    )
+    from ..services.iteration.deployment_safety_service import DeploymentSafetyService
+    from ..services.workflow.checkpointer_manager import get_checkpointer
+    from ..services.workflow.workflow_service import WorkflowService
+
+    focus_model_id = body.focus_model_id or body.failure_model_id
 
     rows_result = await db.execute(
         text("""
@@ -1784,106 +1805,116 @@ async def run_task4_patrol_once(
             )
             SELECT *
             FROM latest_deployments
+            WHERE (CAST(:focus AS text) IS NULL OR model_id = CAST(:focus AS text))
             ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
             LIMIT 50
-        """)
+        """),
+        {"focus": focus_model_id},
     )
     deployments = [dict(row) for row in rows_result.mappings()]
     safety = DeploymentSafetyService(db)
-    gatekeeper = DeploymentGatekeeperService()
-    severe_demo_metrics = {
-        "challenger_auc": 0.62,
-        "challenger_ks": 0.12,
-        "score_psi": 0.36,
-        "bad_rate_drift": 0.25,
-        "recovery_rate": 0.18,
-        "discrimination_passed": False,
-        "calibration_passed": False,
-        "oot_passed": False,
-    }
+    workflow = WorkflowService(db, get_checkpointer())
 
     results: list[dict] = []
-    summary = {"checked": 0, "healthy": 0, "held": 0, "rolled_back": 0, "skipped": 0}
+    summary = {"checked": 0, "healthy": 0, "alerted": 0, "repairing": 0, "rolled_back": 0, "skipped": 0}
 
     for deployment in deployments:
         model_id = str(deployment.get("model_id") or "")
         status = str(deployment.get("status") or "").upper()
         stage = str(deployment.get("current_stage") or "PRODUCTION").upper()
-        if stage not in STAGE_TRAFFIC_RATIO:
-            stage = "PRODUCTION"
 
-        if status in {"ROLLED_BACK", "FAILED", "ABORTED"}:
+        if status in {"FAILED", "ABORTED"}:
             summary["skipped"] += 1
             results.append({
                 "deployment_id": str(deployment.get("deployment_id")),
                 "model_id": model_id,
                 "stage": stage,
                 "patrol_status": "SKIPPED",
-                "action": "SKIP_TERMINAL_DEPLOYMENT",
+                "action": "SKIP_UNAVAILABLE_DEPLOYMENT",
             })
             continue
 
-        metrics = dict(body.health_metrics_by_model.get(model_id) or {})
-        if body.failure_model_id and body.failure_model_id == model_id:
-            metrics = severe_demo_metrics
-
-        health_result = DeploymentSafetyService.check_stage_health(stage, metrics)
-        decision = gatekeeper.decide(
-            stage=stage,
-            health_result=health_result,
-            deployment_context=None,
-            challenger_qualified=True,
-            current_traffic_ratio=float(deployment.get("challenger_traffic_ratio") or 0),
+        champion_version = (
+            deployment.get("active_version_code")
+            or deployment.get("current_champion")
+            or deployment.get("champion_version")
+            or deployment.get("stable_version_code")
+            or "champion_v1"
         )
         summary["checked"] += 1
+        lifecycle_result = await workflow.start(
+            model_id=model_id,
+            champion_version=str(champion_version),
+            trigger_type="SCHEDULED_TRIGGER",
+        )
+        state = lifecycle_result.get("state") or {}
+        current_phase = lifecycle_result.get("current_phase") or state.get("current_phase")
+        has_alerts = bool(state.get("has_alerts"))
+        trigger_diagnosis = bool(state.get("trigger_diagnosis"))
+        alert_count = int(state.get("alert_count") or 0)
+        should_protect = has_alerts or trigger_diagnosis or alert_count > 0
 
-        if decision.decision == "ROLLBACK":
+        if should_protect:
+            summary["alerted"] += 1
             rollback_target = (
                 deployment.get("stable_version_code")
                 or deployment.get("champion_version")
                 or deployment.get("active_version_code")
             )
-            rollback_result = await safety.rollback(
-                deployment=deployment,
-                reason="TASK4_PATROL:" + ",".join(decision.decision_reasons),
-                rollback_target=str(rollback_target) if rollback_target else None,
-                updated_by=body.updated_by,
-            )
-            summary["rolled_back"] += 1
-            results.append({
-                "deployment_id": str(deployment.get("deployment_id")),
-                "model_id": model_id,
-                "stage": stage,
-                "patrol_status": "ROLLED_BACK",
-                "action": "ROLLBACK",
-                "health_result": health_result,
-                "gatekeeper_decision": decision.__dict__,
-                "rollback_result": rollback_result,
-            })
-            continue
+            active_version = deployment.get("active_version_code") or deployment.get("current_champion")
+            can_rollback = bool(rollback_target and active_version and str(rollback_target) != str(active_version))
+            if can_rollback:
+                rollback_result = await safety.rollback(
+                    deployment=deployment,
+                    reason=f"TASK4_PATROL_ALERT:lifecycle={lifecycle_result.get('lifecycle_run_id')}",
+                    rollback_target=str(rollback_target),
+                    updated_by=body.updated_by,
+                )
+                summary["rolled_back"] += 1
+                action = "ROLLBACK_AND_REPAIR"
+                patrol_status = "ROLLED_BACK"
+            else:
+                rollback_result = None
+                summary["repairing"] += 1
+                action = "ALERT_TO_REPAIR"
+                patrol_status = "ALERTED"
 
-        if not health_result.get("passed", True):
             await IterationRepo(db).save_deployment_stage_record({
                 "deployment_id": str(deployment.get("deployment_id")),
                 "stage": stage,
-                "decision": "HOLD",
-                "status": "HELD",
-                "health_json": health_result,
-                "result_json": {
+                "decision": "LIFECYCLE_ALERT",
+                "status": patrol_status,
+                "health_json": {
                     "patrol": True,
-                    "decision_reasons": decision.decision_reasons,
+                    "source": "lifecycle_alert",
+                    "lifecycle_run_id": lifecycle_result.get("lifecycle_run_id"),
+                    "current_phase": current_phase,
+                    "has_alerts": has_alerts,
+                    "trigger_diagnosis": trigger_diagnosis,
+                    "alert_count": alert_count,
+                    "primary_root_cause_code": state.get("primary_root_cause_code"),
+                    "recommended_action": state.get("recommended_action"),
+                },
+                "result_json": {
+                    "action": action,
+                    "rollback_result": rollback_result,
                     "checked_by": body.updated_by,
                 },
             })
-            summary["held"] += 1
             results.append({
                 "deployment_id": str(deployment.get("deployment_id")),
                 "model_id": model_id,
                 "stage": stage,
-                "patrol_status": "HELD",
-                "action": "HOLD",
-                "health_result": health_result,
-                "gatekeeper_decision": decision.__dict__,
+                "patrol_status": patrol_status,
+                "action": action,
+                "lifecycle_run_id": lifecycle_result.get("lifecycle_run_id"),
+                "current_phase": current_phase,
+                "has_alerts": has_alerts,
+                "trigger_diagnosis": trigger_diagnosis,
+                "alert_count": alert_count,
+                "primary_root_cause_code": state.get("primary_root_cause_code"),
+                "recommended_action": state.get("recommended_action"),
+                "rollback_result": rollback_result,
             })
             continue
 
@@ -1892,7 +1923,15 @@ async def run_task4_patrol_once(
             "stage": stage,
             "decision": "HEALTH_CHECK",
             "status": "PASSED",
-            "health_json": health_result,
+            "health_json": {
+                "patrol": True,
+                "source": "lifecycle_monitoring",
+                "lifecycle_run_id": lifecycle_result.get("lifecycle_run_id"),
+                "current_phase": current_phase,
+                "has_alerts": has_alerts,
+                "trigger_diagnosis": trigger_diagnosis,
+                "alert_count": alert_count,
+            },
             "result_json": {
                 "patrol": True,
                 "interval_seconds": body.interval_seconds,
@@ -1906,7 +1945,11 @@ async def run_task4_patrol_once(
             "stage": stage,
             "patrol_status": "PASSED",
             "action": "OBSERVE",
-            "health_result": health_result,
+            "lifecycle_run_id": lifecycle_result.get("lifecycle_run_id"),
+            "current_phase": current_phase,
+            "has_alerts": has_alerts,
+            "trigger_diagnosis": trigger_diagnosis,
+            "alert_count": alert_count,
         })
 
     if body.persist:
@@ -1918,7 +1961,7 @@ async def run_task4_patrol_once(
         request,
         {
             "scheduler": {
-                "mode": "FRONTEND_TIMER_RUN_ONCE",
+                "mode": "LIFECYCLE_ALERT_PATROL",
                 "interval_seconds": body.interval_seconds,
                 "persisted": body.persist,
                 "checked_at": datetime.now(UTC).isoformat(),

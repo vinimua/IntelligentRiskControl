@@ -137,6 +137,23 @@ export type EnrichedMetricsResponse = {
   diagnosis_status: string | null;
 };
 
+/* ── 诊断报告 RAG 参考资料 ── */
+
+export type SupportingDocument = {
+  chunk_id: string;
+  document_id: string;
+  section_path?: string | null;
+  page_number?: number | null;
+  score?: number | null;
+};
+
+export type DiagnosisRunDetail = {
+  run?: Record<string, unknown> | null;
+  candidates?: Array<Record<string, unknown>>;
+  evidence?: Array<Record<string, unknown>>;
+  supporting_documents?: SupportingDocument[];
+};
+
 /* ── B1 持续性判定 ── */
 
 export type TriggerSource = "B1_PERSISTENCE" | "WP08_SENTINEL";

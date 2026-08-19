@@ -5,6 +5,7 @@ DiagnosisNode 输出
 from ..common.base import ContractModel
 
 from ..common.enums import DimensionCode, RecommendedAction
+from .diagnosis_context import DocumentRef
 
 class DiagnosisStateOutput(ContractModel):
     """诊断流程的状态输出。"""
@@ -23,3 +24,5 @@ class DiagnosisStateOutput(ContractModel):
     # A7 §4: 冻结合格客群定义（segment_weighted_retrain 的真实权重来源）
     # {"segment_column": str, "affected_segments": list, "segment_boost": float}
     segment_evidence: dict | None = None
+    # RAG 仅用于报告解释/案例引用，不参与根因排序。
+    supporting_documents: list[DocumentRef] = []

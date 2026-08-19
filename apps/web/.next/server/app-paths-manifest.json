@@ -1,4 +1,3 @@
 {
-  "/api/modelops/[...path]/route": "app/api/modelops/[...path]/route.js",
   "/page": "app/page.js"
 }

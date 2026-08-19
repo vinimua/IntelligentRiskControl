@@ -19,6 +19,7 @@ from packages.models.common.enums import (
     Severity,
 )
 from packages.models.diagnosis.diagnosis_context import CandidateRootCause
+from packages.models.diagnosis.diagnosis_context import DocumentRef
 from packages.models.monitoring.alert_context import AlertContext, AlertDetail
 from apps.modelops_api.services.diagnosis.diagnosis_service import (
     DiagnosisService,
@@ -51,6 +52,18 @@ class FakeKnowledge:
 
     async def query_gate_blocking_alerts(self, alert_codes: list[str]):
         return [g for g in self.gate_alerts if g["alert_code"] in alert_codes]
+
+
+class FakeKnowledgeWithRag(FakeKnowledge):
+    async def search_supporting_documents(self, **kwargs):
+        return [
+            DocumentRef(
+                chunk_id="chunk-1",
+                document_id="doc-1",
+                section_path="feature drift/playbook",
+                score=0.87,
+            )
+        ]
 
 
 def _service(knowledge) -> DiagnosisService:
@@ -335,6 +348,74 @@ async def test_no_gate_alert_proceeds_normally():
 
 
 # ── 主关系切换字段同步 ──
+
+
+@pytest.mark.asyncio
+async def test_rag_supporting_documents_are_report_only_evidence():
+    """RAG 引用只进入报告证据，不改变 primary root cause。"""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    knowledge = FakeKnowledgeWithRag({
+        "AUC_DROP": [
+            _rc("AUC_DROP", "feature_drift", weight=0.10),
+        ],
+    })
+    alert_context = AlertContext(
+        schema_version="1.0",
+        trace_id="t1",
+        monitoring_run_id="mon-1",
+        model_id="m1",
+        model_version="v1",
+        monitor_window_id="W3",
+        baseline_id="W0",
+        data_track=DataTrack.NATURAL,
+        alert_details=[
+            AlertDetail(
+                alert_id="a2",
+                alert_code="AUC_DROP",
+                severity=Severity.WARNING,
+                object_type=ObjectType.MODEL,
+                object_code="m1",
+                metric_code="AUC",
+                metric_version="V1",
+                availability_status=AvailabilityStatus.AVAILABLE,
+            ),
+        ],
+    )
+
+    service = _service(knowledge)
+    service.repo = MagicMock()
+    service.repo.create_run = AsyncMock(return_value={"diagnosis_run_id": "diag-1"})
+    service.repo.batch_insert_candidates = AsyncMock(
+        return_value={"feature_drift": "cand-1"}
+    )
+    service.repo.insert_evidence = AsyncMock()
+    service.repo.complete_run = AsyncMock()
+
+    with (
+        patch.object(service, "_load_drift_data", AsyncMock(return_value=[])),
+        patch.object(service, "_load_multi_window_drift", AsyncMock(return_value={})),
+        patch.object(service, "_load_metrics", AsyncMock(return_value=[])),
+        patch.object(service, "_load_feature_importance", AsyncMock(return_value=None)),
+        patch(
+            "apps.modelops_api.services.diagnosis.diagnosis_service.MonitoringRepo",
+            return_value=MagicMock(get_run=AsyncMock(return_value={"model_id": "m1"})),
+        ),
+    ):
+        result = await service.diagnose(
+            alert_context=alert_context,
+            monitoring_run_id="mon-1",
+        )
+
+    assert result.primary_root_cause_code == "feature_drift"
+    assert result.supporting_documents[0].chunk_id == "chunk-1"
+    rag_calls = [
+        call for call in service.repo.insert_evidence.await_args_list
+        if call.args
+        and call.args[0].get("method_code") == "rag_supporting_document_search"
+    ]
+    assert len(rag_calls) == 1
+    assert rag_calls[0].args[0]["direction"] == "NEUTRAL"
 
 
 @pytest.mark.asyncio

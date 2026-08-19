@@ -1730,6 +1730,134 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/task4/parallel-control:
+    get:
+      tags:
+      - iteration
+      summary: Get Task4 Parallel Control
+      description: '任务4并行管控总览。
+
+
+        聚合最近每个模型的一条部署记录、灰度路由状态、阶段分布和回滚事件，
+
+        用于验收“不少于 50 个模型的并行管控及分步上线”。'
+      operationId: get_task4_parallel_control_api_iteration_task4_parallel_control_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/task4/patrol/run-once:
+    post:
+      tags:
+      - iteration
+      summary: Run Task4 Patrol Once
+      description: 'Run one scheduled patrol by reusing the lifecycle Alert path.
+
+
+        Patrol does not invent health metrics. For each deployed model it starts a
+
+        lifecycle run, lets the normal monitoring/B1 Alert logic decide whether the
+
+        model is abnormal, and only then performs deployment protection such as
+
+        rollback to the stable version.'
+      operationId: run_task4_patrol_once_api_iteration_task4_patrol_run_once_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task4PatrolRequest'
+              default:
+                interval_seconds: 300
+                persist: true
+                updated_by: task4_patrol
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/deployments/proactive-release:
+    post:
+      tags:
+      - iteration
+      summary: Create Proactive Release
+      description: 'Create a deployment for a healthy new-scenario model.
+
+
+        NEW_SCENARIO releases do not require champion-vs-challenger comparison.
+
+        They must pass the predeploy health gate and provide a rollback target, then
+
+        enter the normal staged rollout and task4 parallel-control surface.'
+      operationId: create_proactive_release_api_iteration_deployments_proactive_release_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProactiveReleaseRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/deployments/batch/proactive-release:
+    post:
+      tags:
+      - iteration
+      summary: Batch Create Proactive Release
+      description: Create up to 50 healthy new-scenario deployments for task4 control.
+      operationId: batch_create_proactive_release_api_iteration_deployments_batch_proactive_release_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchProactiveReleaseRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/iteration/deployments/{deployment_id}:
     get:
       tags:
@@ -1804,6 +1932,98 @@ paths:
               default:
                 reason: MANUAL_ROLLBACK
                 updated_by: admin
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/deployments/{deployment_id}/rollback-drill:
+    post:
+      tags:
+      - iteration
+      summary: Rollback Drill
+      description: 'Run a non-destructive automatic rollback drill.
+
+
+        The drill uses the same health gate, gatekeeper, and rollback service as
+
+        DeploymentGateNode. By default it rolls the DB transaction back before
+
+        returning, so existing deployment and routing state are not changed.'
+      operationId: rollback_drill_api_iteration_deployments__deployment_id__rollback_drill_post
+      parameters:
+      - name: deployment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Deployment Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RollbackDrillRequest'
+              default:
+                stage: CANARY_20
+                persist: false
+                updated_by: rollback_drill
+                health_metrics:
+                  challenger_auc: 0.62
+                  challenger_ks: 0.12
+                  score_psi: 0.36
+                  bad_rate_drift: 0.25
+                  recovery_rate: 0.18
+                  discrimination_passed: false
+                  calibration_passed: false
+                  oot_passed: false
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/iteration/deployments/{deployment_id}/advance-stage:
+    post:
+      tags:
+      - iteration
+      summary: Advance Deployment Stage
+      description: 'Advance one deployment through staged rollout by deployment_id.
+
+
+        This is the task4 direct rollout path for proactive NEW_SCENARIO releases
+
+        that do not have a lifecycle_run_id. It still runs the deployment health
+
+        gate and Gatekeeper before changing traffic or promoting the challenger.'
+      operationId: advance_deployment_stage_api_iteration_deployments__deployment_id__advance_stage_post
+      parameters:
+      - name: deployment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Deployment Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdvanceDeploymentRequest'
+              default:
+                updated_by: admin
+                health_metrics: {}
       responses:
         '200':
           description: Successful Response
@@ -3001,6 +3221,23 @@ components:
       description: "A7 首要根因契约。\n\n字段:\n    root_cause_code: 根因编码（仅自然漂移类：FEATURE_DRIFT/SEGMENT_DRIFT/CONCEPT_DRIFT）。\n\
         \    candidate_status: 候选状态——必须为 CONFIRMED（已确认）。\n    confidence: 置信度（0~1）。\n\
         \    evidence_refs: 证据引用（至少一条）。"
+    AdvanceDeploymentRequest:
+      properties:
+        target_stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Stage
+        updated_by:
+          type: string
+          title: Updated By
+          default: admin
+        health_metrics:
+          additionalProperties: true
+          type: object
+          title: Health Metrics
+      type: object
+      title: AdvanceDeploymentRequest
     AffectedSegment:
       properties:
         segment_id:
@@ -3119,6 +3356,19 @@ components:
       required:
       - items
       title: BatchPredictRequest
+    BatchProactiveReleaseRequest:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ProactiveReleaseRequest'
+          type: array
+          maxItems: 50
+          minItems: 1
+          title: Items
+      type: object
+      required:
+      - items
+      title: BatchProactiveReleaseRequest
     BatchStartRequest:
       properties:
         models:
@@ -3707,6 +3957,59 @@ components:
           description: 特征字典
       type: object
       title: PredictRequest
+    ProactiveReleaseRequest:
+      properties:
+        model_id:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Model Id
+        challenger_version:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Challenger Version
+        champion_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Champion Version
+        rollback_target:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Rollback Target
+        release_type:
+          type: string
+          title: Release Type
+          default: NEW_SCENARIO
+        initial_stage:
+          type: string
+          title: Initial Stage
+          default: SHADOW
+        health_status:
+          type: string
+          title: Health Status
+          default: PASSED
+        health_metrics:
+          additionalProperties: true
+          type: object
+          title: Health Metrics
+        artifact_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Artifact Uri
+        updated_by:
+          type: string
+          title: Updated By
+          default: admin
+      type: object
+      required:
+      - model_id
+      - challenger_version
+      - rollback_target
+      title: ProactiveReleaseRequest
     QualificationRequest:
       properties:
         qualification_run_id:
@@ -3892,6 +4195,27 @@ components:
       - APPROVE
       - REJECT
       title: ReviewDecision
+    RollbackDrillRequest:
+      properties:
+        stage:
+          type: string
+          minLength: 1
+          title: Stage
+          default: CANARY_20
+        persist:
+          type: boolean
+          title: Persist
+          default: false
+        updated_by:
+          type: string
+          title: Updated By
+          default: rollback_drill
+        health_metrics:
+          additionalProperties: true
+          type: object
+          title: Health Metrics
+      type: object
+      title: RollbackDrillRequest
     RollbackRequest:
       properties:
         reason:
@@ -4260,6 +4584,34 @@ components:
       - iteration_run_id
       - root_cause_code
       title: StrategyCandidatesResponse
+    Task4PatrolRequest:
+      properties:
+        interval_seconds:
+          type: integer
+          maximum: 86400.0
+          minimum: 10.0
+          title: Interval Seconds
+          default: 300
+        focus_model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Focus Model Id
+        failure_model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Model Id
+        persist:
+          type: boolean
+          title: Persist
+          default: true
+        updated_by:
+          type: string
+          title: Updated By
+          default: task4_patrol
+      type: object
+      title: Task4PatrolRequest
     TimeRange:
       properties:
         window_id:
@@ -4361,6 +4713,11 @@ components:
           type: boolean
           title: Candidate Frozen Before Oot
           default: false
+        frozen_identity_checksum:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Frozen Identity Checksum
         consumption_receipt:
           anyOf:
           - additionalProperties: true
